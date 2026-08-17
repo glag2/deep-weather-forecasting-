@@ -116,6 +116,38 @@ Il confronto sarebbe impietoso e per questo utile: dice quanto dista un modello
 addestrato su CPU in locale dallo stato dell'arte, invece di limitarsi a dire che batte
 la ripetizione di ieri.
 
+## 5-bis. La conservazione reale e' molto piu' lunga di quella dichiarata
+
+La documentazione ECMWF dichiara una finestra mobile di pochi giorni. Presa alla
+lettera, renderebbe impossibile recuperare un buco appena scoperto, e i giorni mancanti
+del 13-14 agosto 2026 sarebbero persi per sempre.
+
+Verificato invece contro il mirror pubblico su AWS
+(`ecmwf-forecasts.s3.eu-central-1.amazonaws.com`, elencato il 2026-08-18):
+
+| verifica | esito |
+|---|---|
+| 13, 14, 15 agosto 2026 presenti | si' |
+| profondita' dell'archivio | 2023-06 presente, 2023-01 assente |
+| dimensione di una corsa `oper` passo 0 | 130,9 MB reali |
+| campi nell'indice della corsa | 187 |
+| variabili del progetto presenti nell'indice | **11 su 11** |
+
+Due conseguenze pratiche.
+
+La prima: il buco **si puo' colmare dalla stessa famiglia di dati** che servira' per il
+tempo quasi reale, invece di restare scoperto in attesa che ERA5 arrivi. La seconda:
+l'archivio arriva indietro di anni, quindi la finestra di sovrapposizione con ERA5 su
+cui misurare lo scarto fra le due fonti non e' di due giorni ma di **mesi**, e la
+misura del punto 4 diventa molto piu' solida di quanto previsto.
+
+Dettagli operativi verificati sul campo, che costano tempo se scoperti a valle:
+
+- il nome del file indice **sostituisce** l'estensione, non la aggiunge: l'indice di
+  `...-oper-fc.grib2` e' `...-oper-fc.index`, non `...-oper-fc.grib2.index`;
+- il mirror risponde `503 SlowDown` con facilita': serve un'attesa progressiva fra le
+  richieste, altrimenti l'elenco si interrompe a meta' senza errori evidenti.
+
 ## 6. Che cosa fare, in ordine
 
 1. Aprire subito la raccolta giornaliera da ECMWF Open Data, cosi' il buco resta
