@@ -133,10 +133,29 @@ src/dwf/
   models/                  rete convoluzionale e teste probabilistiche
 scripts/
   check_cds_access.py      diagnosi di accesso al CDS
+  download_era5.py         scarico del periodo configurato, ripartibile
   benchmark_model.py       costo del modello su CPU
 tests/                     suite pytest
-data/                      (ignorata da git) GRIB, Zarr, tabelle, artefatti
+datasets/                  (ignorata da git) GRIB, Zarr, tabelle, artefatti
 ```
+
+La radice dei dati e' `datasets/` e non `data/`: su Windows `data` verrebbe risolto
+nella cartella `Data/` gia' presente nel repository, mescolando decine di GB generati
+ai file tracciati, mentre su Linux e in Docker resterebbe una cartella distinta. Il
+nome e' configurabile con `paths.data_root`.
+
+## Scarico dei dati
+
+```bash
+uv run python scripts/download_era5.py --dry-run   # mostra il piano, non invia nulla
+uv run python scripts/download_era5.py --limit 2   # un solo mese, per misurare
+uv run python scripts/download_era5.py             # tutto il periodo
+```
+
+Il download e' **ripartibile**: i file gia' presenti e non vuoti vengono saltati, e
+ogni richiesta scrive su un file `.partial` rinominato solo a scaricamento completato,
+cosi' un'interruzione non lascia un GRIB troncato che sembrerebbe valido. Le richieste
+sono sequenziali perche' il CDS limita quelle concorrenti per utente.
 
 I dati sono organizzati su due livelli: **Zarr** per i tensori numerici, su cui il
 training fa accesso casuale a finestre spaziotemporali, e **Polars/Parquet** come

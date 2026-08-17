@@ -121,7 +121,11 @@ training:
     snow_fraction: 0.5
 
 paths:
-  data_root: data
+  # Volutamente diversa dalla cartella `Data/` gia' presente nel repo: su Windows
+  # `data` verrebbe risolto in `Data` (filesystem non case-sensitive) mescolando
+  # decine di GB generati ai file tracciati, mentre su Linux e in Docker resterebbe
+  # una cartella distinta. Un nome senza collisioni rende il layout identico ovunque.
+  data_root: datasets
   raw_subdir: raw
   zarr_name: era5_slots.zarr
   static_name: era5_static.zarr

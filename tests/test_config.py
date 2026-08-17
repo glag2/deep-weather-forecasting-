@@ -281,7 +281,7 @@ def test_campo_sconosciuto_e_rifiutato(payload: dict[str, Any]) -> None:
 
 def test_percorsi_derivati_stanno_sotto_data_root(tmp_path: Path) -> None:
     config = Config.load(CONFIG_PATH, project_root=tmp_path)
-    assert config.data_root == (tmp_path / "data").resolve()
+    assert config.data_root == (tmp_path / config.paths.data_root).resolve()
     for path in (
         config.raw_dir,
         config.zarr_path,
@@ -351,3 +351,20 @@ def test_passo_maggiore_del_test_e_rifiutato(payload: dict[str, Any]) -> None:
     payload["split"]["test_days"] = 90
     with pytest.raises(ValidationError, match="non verrebbero mai valutati"):
         build(payload)
+
+
+def test_la_radice_dati_non_collide_con_la_cartella_del_repo() -> None:
+    """Su Windows `data` verrebbe risolto nella `Data/` tracciata, mescolando i file.
+
+    Il nome deve restare distinto perche' il layout sia identico su Windows, Linux e
+    in Docker, e perche' i GB generati non finiscano accanto ai sorgenti tracciati.
+    """
+    config = Config.load(CONFIG_PATH)
+    assert config.paths.data_root.lower() != "data"
+    assert config.data_root.name == config.paths.data_root
+
+
+def test_tutti_i_percorsi_restano_sotto_la_radice_dati() -> None:
+    config = Config.load(CONFIG_PATH)
+    for percorso in (config.raw_dir, config.zarr_path, config.tables_dir, config.static_path):
+        assert config.data_root in percorso.parents or percorso == config.data_root

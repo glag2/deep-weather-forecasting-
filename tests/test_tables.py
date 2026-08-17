@@ -16,6 +16,7 @@ import pytest
 from dwf.slots import GAP_LABEL
 from dwf.tables import (
     ALL_SPECS,
+    DOWNLOADS,
     METRICS,
     SLOTS,
     VARIABLES,
@@ -220,3 +221,27 @@ def test_registro_variabili_conserva_tipo_e_unita() -> None:
     frame = build_variables_table([spec_by_short_name("t2m")], targets=[])
     assert frame["kind"][0] == "instantaneous"
     assert frame["units"][0] == "K"
+
+
+def test_manifest_dei_download_accetta_mesi_nulli() -> None:
+    """I campi statici non hanno anno ne mese: il manifest deve ammettere il nullo."""
+    frame = cast_to_schema(
+        pl.DataFrame(
+            {
+                "kind": ["static", "instantaneous"],
+                "year": [None, 2024],
+                "month": [None, 1],
+                "filename": ["static.grib", "instantaneous_2024-01.grib"],
+                "n_variables": [2, 7],
+                "n_hours": [1, 3],
+                "status": ["downloaded", "skipped"],
+                "size_bytes": [1024, 2048],
+                "seconds": [1.0, 0.0],
+                "message": ["", "file gia' presente"],
+                "recorded_at": [datetime(2026, 8, 17, tzinfo=UTC)] * 2,
+            }
+        ),
+        DOWNLOADS,
+    )
+    validate_schema(frame, DOWNLOADS)
+    assert frame["year"].to_list() == [None, 2024]

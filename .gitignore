@@ -5,14 +5,14 @@
 *.idx
 *.crdownload
 
-# Dati scaricati e artefatti prodotti dalla pipeline.
-# La barra iniziale ancora la regola alla radice: senza di essa `data/`
-# escluderebbe anche il package sorgente `src/dwf/data/`.
-/data/
+# Dati scaricati e artefatti prodotti dalla pipeline (`paths.data_root`).
+# La barra iniziale ancora la regola alla radice: senza di essa una regola come
+# `data/` escluderebbe anche il package sorgente `src/dwf/data/`.
+/datasets/
 *.zarr/
 *.nc
 
-# Credenziali CDS: mai committare (`.env.example` resta tracciato come modello)
+# Credenziali CDS: mai committare. La procedura e le variabili richieste sono nel README.
 .cdsapirc
 
 # Byte-compiled / optimized / DLL files

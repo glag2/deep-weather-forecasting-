@@ -168,10 +168,30 @@ FORECAST = TableSpec(
     },
 )
 
+DOWNLOADS = TableSpec(
+    filename="downloads.parquet",
+    description="Esito delle richieste al CDS, una riga per file richiesto.",
+    schema={
+        # `year` e `month` sono nulli per i campi statici, che non hanno un mese.
+        "kind": pl.String,
+        "year": pl.Int16,
+        "month": pl.Int8,
+        "filename": pl.String,
+        "n_variables": pl.Int32,
+        "n_hours": pl.Int32,
+        "status": pl.String,
+        "size_bytes": pl.Int64,
+        "seconds": pl.Float64,
+        "message": pl.String,
+        "recorded_at": UTC_TIMESTAMP,
+    },
+)
+
 ALL_SPECS: tuple[TableSpec, ...] = (
     SLOTS,
     SLOT_STATS,
     VARIABLES,
+    DOWNLOADS,
     CHANNELS,
     NORM_STATS,
     METRICS,
