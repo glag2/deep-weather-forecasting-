@@ -185,3 +185,46 @@ class TestSalvataggioECaricamento:
         canali = [{"channel_index": 0, "name": "t2m_t-0", "normalized": True}]
         save_metadata(tmp_path, {"channels": canali})
         assert load_metadata(tmp_path)["channels"] == canali
+
+# --------------------------------------------------------------------------- #
+# Pesi complessi
+# --------------------------------------------------------------------------- #
+
+
+class TestPesiComplessi:
+    """La variante spettrale apprende pesi complessi: devono essere salvabili.
+
+    Il criterio di ammissione non e' "numerico" ma "rappresentazione binaria a
+    dimensione fissa", che e' cio' che NumPy scrive senza ricorrere a pickle. Escludere
+    il complesso rendeva la variante di Fourier impossibile da salvare, e la restrizione
+    non comprava alcuna sicurezza in piu'.
+    """
+
+    def test_un_peso_complesso_viene_salvato_e_riletto_identico(self, tmp_path: Path) -> None:
+        pesi = {"spectral": np.array([[1 + 2j, 3 - 4j]], dtype=np.complex64)}
+        save_weights(tmp_path, pesi)
+        riletti = load_weights(tmp_path)
+        assert riletti["spectral"].dtype == np.complex64
+        assert np.array_equal(riletti["spectral"], pesi["spectral"])
+
+    def test_il_file_dei_pesi_complessi_non_richiede_pickle(self, tmp_path: Path) -> None:
+        # La prova diretta: rileggere con allow_pickle=False deve riuscire.
+        save_weights(tmp_path, {"w": np.array([1 + 1j], dtype=np.complex128)})
+        with np.load(tmp_path / WEIGHTS_NAME, allow_pickle=False) as archivio:
+            assert archivio["w"].dtype.kind == "c"
+
+    def test_un_modello_con_blocco_spettrale_fa_il_giro_completo(self, tmp_path: Path) -> None:
+        # Prova d'integrazione: e' il caso reale che ha fatto fallire il banco.
+        from dwf.models.variants.fourier import SpectralConv2d
+
+        blocco = SpectralConv2d(4, 4, modes=3)
+        originali = {nome: p.detach().numpy() for nome, p in blocco.named_parameters()}
+        save_weights(tmp_path, originali)
+        riletti = load_weights(tmp_path)
+        for nome, valore in originali.items():
+            assert np.array_equal(riletti[nome], valore), nome
+
+    def test_gli_oggetti_restano_rifiutati(self, tmp_path: Path) -> None:
+        # Allargare ai complessi non deve aver aperto la porta a pickle.
+        with pytest.raises(PersistenceError, match="pickle"):
+            save_weights(tmp_path, {"w": np.array([{"codice": "malevolo"}], dtype=object)})

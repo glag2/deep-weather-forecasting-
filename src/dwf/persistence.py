@@ -35,9 +35,15 @@ import numpy as np
 WEIGHTS_NAME = "weights.npz"
 METADATA_NAME = "metadata.json"
 
-# Tipi ammessi per i pesi. Esclude esplicitamente ``object``, che e' il tipo che
-# NumPy serializza tramite pickle.
-ALLOWED_KINDS = frozenset({"f", "i", "u", "b"})
+# Tipi ammessi per i pesi: reale, intero con e senza segno, booleano e **complesso**.
+# Il criterio non e' "numerico" ma "rappresentazione binaria a dimensione fissa": sono
+# esattamente i tipi che NumPy scrive senza toccare pickle. Il complesso rientra a
+# pieno titolo, ed escluderlo rendeva impossibile salvare la variante spettrale, che
+# apprende pesi complessi.
+#
+# L'esclusione che conta resta ``object``, l'unico canale attraverso cui pickle
+# potrebbe rientrare.
+ALLOWED_KINDS = frozenset({"f", "i", "u", "b", "c"})
 
 
 class PersistenceError(RuntimeError):
