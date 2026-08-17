@@ -1,0 +1,10 @@
+# La dashboard mostra percorsi, metriche e struttura interna del progetto: non deve
+# ascoltare su tutte le interfacce. Con l'impostazione predefinita Streamlit annuncia
+# anche un indirizzo di rete e uno esterno. Qui si vincola esplicitamente al loopback.
+[server]
+address = "127.0.0.1"
+port = 8501
+headless = true
+
+[browser]
+gatherUsageStats = false

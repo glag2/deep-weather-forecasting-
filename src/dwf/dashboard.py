@@ -90,11 +90,16 @@ def _leggi(spec, directory: Path) -> pl.DataFrame | None:
 
 def panoramica(config: Config) -> list[Riquadro]:
     """Numeri d'insieme del progetto, letti dagli artefatti reali."""
-    righe = config.area.n_latitudes
-    colonne = config.area.n_longitudes
+    righe = config.region.n_lat
+    colonne = config.region.n_lon
     riquadri = [
         Riquadro("Griglia", f"{righe} x {colonne}", f"{righe * colonne:,} punti"),
-        Riquadro("Risoluzione", f"{config.area.resolution} gradi", "nativa ERA5"),
+        Riquadro("Risoluzione", f"{config.region.grid_step} gradi", "nativa ERA5"),
+        Riquadro(
+            "Area",
+            f"{config.region.south:g} - {config.region.north:g} N",
+            f"{config.region.west:g} - {config.region.east:g} E",
+        ),
         Riquadro(
             "Finestra",
             f"{config.windows.input_slots} -> {config.windows.output_slots} slot",
@@ -105,17 +110,27 @@ def panoramica(config: Config) -> list[Riquadro]:
 
     slots = _leggi(SLOTS, config.tables_dir)
     if slots is not None and slots.height:
-        primo = slots["valid_time"].min()
-        ultimo = slots["valid_time"].max()
+        # `slots.parquet` cataloga l'intero periodo configurato, non cio' che e' stato
+        # davvero ingerito: contare le righe direbbe un numero molto piu' grande del
+        # vero. La colonna `usable` e' l'unica che indica la presenza reale nel tensore.
+        utilizzabili = slots.filter(pl.col("usable"))
+        if utilizzabili.height:
+            primo = utilizzabili["valid_time"].min()
+            ultimo = utilizzabili["valid_time"].max()
+            nota = f"da {primo:%Y-%m-%d} a {ultimo:%Y-%m-%d}"
+        else:
+            nota = "nessuno presente nello store"
         riquadri.append(
             Riquadro(
-                "Slot ingeriti",
-                f"{slots.height:,}",
-                f"da {primo:%Y-%m-%d} a {ultimo:%Y-%m-%d}",
+                "Slot utilizzabili",
+                f"{utilizzabili.height:,} / {slots.height:,}",
+                nota,
             )
         )
     else:
-        riquadri.append(Riquadro("Slot ingeriti", "nessuno", "eseguire scripts/ingest_era5.py"))
+        riquadri.append(
+            Riquadro("Slot utilizzabili", "nessuno", "eseguire scripts/ingest_era5.py")
+        )
 
     scaricati = _leggi(DOWNLOADS, config.tables_dir)
     if scaricati is not None and scaricati.height:
@@ -136,7 +151,13 @@ def copertura_mensile(config: Config) -> pl.DataFrame | None:
     return (
         slots.with_columns(pl.col("valid_time").dt.strftime("%Y-%m").alias("mese"))
         .group_by("mese")
-        .agg(pl.len().alias("slot"))
+        .agg(
+            pl.len().alias("catalogati"),
+            pl.col("usable").sum().alias("presenti"),
+        )
+        .with_columns(
+            (pl.col("presenti") / pl.col("catalogati")).alias("frazione")
+        )
         .sort("mese")
     )
 
