@@ -5,6 +5,16 @@
 *.idx
 *.crdownload
 
+# Dati scaricati e artefatti prodotti dalla pipeline.
+# La barra iniziale ancora la regola alla radice: senza di essa `data/`
+# escluderebbe anche il package sorgente `src/dwf/data/`.
+/data/
+*.zarr/
+*.nc
+
+# Credenziali CDS: mai committare (`.env.example` resta tracciato come modello)
+.cdsapirc
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

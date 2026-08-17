@@ -1,0 +1,110 @@
+# Configurazione di riferimento.
+# L'area coincide con quella dei dati gia esplorati in EDA.ipynb: 261 x 401 punti a 0.25 gradi.
+
+region:
+  name: euro_atlantic
+  north: 75.0
+  west: -40.0
+  south: 10.0
+  east: 60.0
+  # Risoluzione richiesta al CDS (regridding lato server). null = griglia nativa 0.25.
+  grid: 0.25
+
+time:
+  # Estremi inclusivi, formato YYYY-MM. ERA5 ha ~5-6 giorni di latenza,
+  # quindi il mese corrente non e mai completo.
+  start: "2024-08"
+  end: "2026-07"
+  # Slot giornalieri previsti: mattina / mezzogiorno / sera (UTC).
+  slot_hours: [6, 12, 18]
+  # Finestra di aggregazione per le variabili cumulate, in ore, centrata sullo slot.
+  accum_window_hours: 8
+
+variables:
+  # Campi istantanei: scaricati solo agli slot_hours.
+  instantaneous:
+    - 2m_temperature
+    - 2m_dewpoint_temperature
+    - mean_sea_level_pressure
+    - 10m_u_component_of_wind
+    - 10m_v_component_of_wind
+    - total_cloud_cover
+  # Campi cumulati sull'ora precedente: richiedono cadenza oraria per essere aggregati.
+  accumulated:
+    - total_precipitation
+    - snowfall
+  # Campi invarianti nel tempo: scaricati una sola volta.
+  static:
+    - land_sea_mask
+    - geopotential
+
+# Variabili previste, ciascuna con la testa probabilistica che la modella.
+# Le altre variabili scaricate restano solo come predittori.
+targets:
+  - name: t2m
+    head: gaussian
+  - name: tp
+    head: hurdle
+    # 0.1 mm in metri: soglia convenzionale sotto la quale non si parla di pioggia.
+    threshold: 0.0001
+  - name: sf
+    head: fraction_of
+    reference: tp
+
+features:
+  # Ritardi (in slot) usati per costruire i canali di tendenza.
+  tendency_lags: [1, 3, 9]
+  include_wind_speed: true
+  include_time_encoding: true
+  include_static: true
+  include_latitude_encoding: true
+
+windows:
+  # 7 giorni di storico -> 21 slot di input.
+  input_slots: 21
+  # 3 giorni di previsione -> 9 slot di output.
+  output_slots: 9
+
+split:
+  # Frazioni temporali contigue: train nel passato, test nel futuro.
+  train_fraction: 0.7
+  val_fraction: 0.15
+  # Slot scartati alle giunzioni per evitare che una finestra attraversi due split.
+  gap_slots: 30
+
+model:
+  base_channels: 48
+  depth: 3
+  blocks_per_level: 2
+  dropout: 0.0
+
+training:
+  seed: 1234
+  epochs: 20
+  batch_size: 4
+  # Crop spaziale usato in training: il modello e completamente convoluzionale,
+  # quindi in inferenza si applica alla griglia intera.
+  crop_size: 96
+  samples_per_epoch: 512
+  learning_rate: 0.0003
+  weight_decay: 0.00001
+  grad_clip_norm: 1.0
+  num_workers: 0
+  # Peso relativo dei termini di loss.
+  loss_weights:
+    gaussian: 1.0
+    precip_occurrence: 0.5
+    precip_amount: 1.0
+    snow_fraction: 0.5
+
+paths:
+  data_root: data
+  raw_subdir: raw
+  zarr_name: era5_slots.zarr
+  static_name: era5_static.zarr
+  tables_subdir: tables
+  artifacts_subdir: artifacts
+
+download:
+  max_retries: 3
+  retry_backoff_seconds: 30
