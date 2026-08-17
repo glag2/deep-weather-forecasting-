@@ -32,7 +32,7 @@ pesatura della perdita, nell'analisi dei dati e nel report.
 
 | | |
 |---|---|
-| Test | **673**, tutti verdi, anche dentro il container |
+| Test | **678**, tutti verdi, anche dentro il container |
 | Lint | `ruff` pulito su `src`, `tests`, `scripts` |
 | Commit sul ramo | 46, nessuno spinto |
 | Dati scaricati | 21 mesi (2024-01, 2025-01 .. 2026-08); il 2024 residuo e' in scaricamento |
@@ -249,10 +249,26 @@ perdita e protocollo restano identici.
 | `recurrent` | 28,93 M | 1114 | ricorrenza convoluzionale a pesi condivisi |
 | `hybrid` | 16,42 M | 371 | somma di ramo locale e ramo spettrale |
 
+**Esito del confronto** (dettaglio in `VARIANTS.md`). A parita' assoluta di protocollo
+le cinque architetture segnano fra 3,642 e 3,666 gradi. Ma ripetere **la stessa**
+variante cambiando solo il seme produce 3,652 / 3,557 / 3,665, cioe' uno scarto tipo di
+**0,059 gradi**: l'intera differenza fra le architetture, 0,024 gradi, sta dentro meno
+di mezzo scarto tipo. **Il banco non riesce a distinguerle.** Proclamare vincitrice la
+prima in classifica significherebbe leggere il seme, non il modello. E' esattamente la
+saturazione dei backbone documentata in arXiv:2407.14129.
+
+Il default va quindi a `conv`, non perche' abbia vinto ma perche' a parita' statistica
+di accuratezza costa 99 s per passata contro 151, 159, 185 e 428 delle altre. Su CPU il
+tempo e' il vincolo reale.
+
 **Le varianti che perdono non vengono cancellate.** Restano in
 `src/dwf/models/variants/`, documentate e selezionabili con `model.variant`, perche' il
 risultato potrebbe ribaltarsi con piu' dati e perche' la misura che le ha scartate deve
 restare riproducibile.
+
+L'unico effetto che **esce** dal rumore e' l'ancoraggio diurno: 6,613 contro una media
+di 3,625, circa cinquanta scarti tipo. Il modo di porre il problema ha pesato piu' di
+ogni scelta di architettura.
 
 Due precisazioni oneste:
 
@@ -406,9 +422,11 @@ Molti sono miei. Sono elencati perche' il metodo conta quanto il risultato.
 1. **Il modello attuale e' ancora quello non ancorato.** L'ancoraggio, la pesatura e il
    termine spettrale sono implementati e testati, e il banco comparativo ne misura
    l'effetto, ma il modello finale a scala piena va riaddestrato.
-2. **Il protocollo del banco e' ridotto** (ritagli piccoli, poche passate). Ordina le
-   alternative, non produce il modello da consegnare, e puo' favorire chi converge in
-   fretta.
+2. **Il protocollo del banco e' ridotto** (ritagli piccoli, poche passate) e misurato su
+   **un solo fold**. La dispersione fra semi e' stata misurata solo per `conv` e si
+   assume simile per le altre: plausibile, non verificato. I tempi per passata sono
+   inoltre contaminati dal carico della macchina, quindi vanno confrontati solo entro
+   la stessa corsa.
 3. **Il calore latente nel report** usa il punto di rugiada dell'ultimo istante
    osservato, perche' la previsione non lo contiene. E' un'ipotesi debole su 72 ore:
    quel campo va letto come struttura spaziale, non come previsione di umidita'. Il
@@ -424,10 +442,11 @@ Molti sono miei. Sono elencati perche' il metodo conta quanto il risultato.
 
 ## 13. Che cosa farei dopo
 
-1. Chiudere il banco comparativo e riaddestrare la variante vincente a scala piena.
-2. Misurare la **curva di capacita'** invece di ingrandire la rete a intuito: la
-   letteratura controllata riporta che i backbone **saturano**, e questo contraddice
-   l'idea che basti fare piu' grande.
+1. Riaddestrare `conv` ancorata a scala piena e rivalutarla onestamente contro la
+   persistenza diurna. Il banco e' chiuso: la scelta e' fatta e motivata.
+2. Misurare la **curva di capacita'** invece di ingrandire la rete a intuito. Il banco
+   ha gia' fornito la prima evidenza in questa direzione: 28,9 milioni di parametri
+   (`recurrent`) non battono 9,9 milioni (`conv`), e costano quattro volte tanto.
 3. Screening delle caratteristiche candidate contro il **cambiamento futuro**, non
    contro il valore futuro: una variabile che predice bene il valore ma non il
    cambiamento non aggiunge nulla alla persistenza.
