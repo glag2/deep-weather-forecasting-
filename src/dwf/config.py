@@ -343,6 +343,24 @@ class LossWeights(_Base):
     precip_occurrence: Annotated[float, Field(ge=0.0)] = 0.5
     precip_amount: Annotated[float, Field(ge=0.0)] = 1.0
     snow_fraction: Annotated[float, Field(ge=0.0)] = 0.5
+    # Termine spettrale contro la doppia penalizzazione. Zero lo disattiva, cosi' il
+    # suo effetto si misura invece di darlo per acquisito.
+    spectral: Annotated[float, Field(ge=0.0)] = 0.0
+
+
+class SpatialWeighting(_Base):
+    """Pesi per punto applicati a tutte le teste della perdita."""
+
+    # Peso di area proporzionale al coseno della latitudine: la griglia e' regolare in
+    # gradi, quindi senza correzione l'Artico conterebbe quanto le medie latitudini pur
+    # coprendo un terzo dell'area.
+    use_area: bool = True
+    # Attenzione extra attorno al luogo di interesse. Volutamente contenuta: alzarla
+    # troppo trasformerebbe un modello di dominio in un modello locale.
+    focus_gain: Annotated[float, Field(ge=0.0, le=5.0)] = 0.5
+    focus_radius_deg: Annotated[float, Field(gt=0.0)] = 1.5
+    focus_lat: Annotated[float, Field(ge=-90.0, le=90.0)] = 46.5031
+    focus_lon: Annotated[float, Field(ge=-180.0, le=180.0)] = 12.5308
 
 
 class TrainingConfig(_Base):
@@ -358,6 +376,7 @@ class TrainingConfig(_Base):
     grad_clip_norm: Annotated[float, Field(gt=0.0)] | None = 1.0
     num_workers: Annotated[int, Field(ge=0)] = 0
     loss_weights: LossWeights = LossWeights()
+    spatial_weighting: SpatialWeighting = SpatialWeighting()
 
     @model_validator(mode="after")
     def _check_crop(self) -> Self:

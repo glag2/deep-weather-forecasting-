@@ -33,6 +33,9 @@ LOG_TWO_PI = math.log(2.0 * math.pi)
 # pochissimi punti e' rumore che destabilizza il gradiente.
 MIN_VALID_POINTS = 1.0
 
+# Chiave con cui il campione trasporta il peso spaziale del proprio ritaglio.
+KEY_SPATIAL_WEIGHT = "spatial_weight"
+
 
 @dataclass(frozen=True, slots=True)
 class LossBreakdown:
@@ -114,6 +117,41 @@ def fraction_loss(
     return masked_mean(punto, mask)
 
 
+def spectral_amplitude_loss(
+    prediction: torch.Tensor, target: torch.Tensor
+) -> torch.Tensor:
+    """Scarto fra gli spettri di ampiezza di previsione e osservazione.
+
+    Serve a contrastare la doppia penalizzazione. Con un errore quadratico puro, se la
+    correlazione fra previsione e realta' vale rho, il minimo si ottiene producendo un
+    campo con ampiezza rho volte quella vera: sfumare conviene, perche' una struttura
+    nel posto sbagliato viene punita due volte, dove c'e' e dove manca. Il risultato e'
+    una previsione troppo liscia, ed e' esattamente il difetto misurato su questo
+    modello, che sottostimava di 4,8 gradi l'escursione a mezzogiorno.
+
+    Confrontare i moduli della trasformata di Fourier bidimensionale misura quanta
+    energia c'e' a ogni scala **senza guardare dove si trova**, quindi premia l'ampiezza
+    corretta senza reintrodurre la penalizzazione di posizione. Non sostituisce
+    l'errore quadratico, lo affianca: da solo sarebbe soddisfatto da un campo con lo
+    spettro giusto e la fase sbagliata.
+
+    La normalizzazione per il numero di celle rende il valore confrontabile con una
+    varianza per punto, cosi' il peso del termine non dipende dalla dimensione del
+    ritaglio.
+    """
+    if prediction.shape != target.shape:
+        raise ValueError(
+            f"Forme incompatibili: previsione {tuple(prediction.shape)}, "
+            f"osservazione {tuple(target.shape)}"
+        )
+    if prediction.ndim < 2:
+        raise ValueError("Servono almeno due dimensioni spaziali")
+    altezza, larghezza = prediction.shape[-2:]
+    spettro_previsto = torch.fft.rfft2(prediction, norm="backward").abs()
+    spettro_vero = torch.fft.rfft2(target, norm="backward").abs()
+    return (spettro_previsto - spettro_vero).square().mean() / (altezza * larghezza)
+
+
 class CompositeLoss:
     """Somma pesata delle perdite di tutte le teste dichiarate nel layout."""
 
@@ -123,6 +161,15 @@ class CompositeLoss:
         self.weight_occurrence = float(getattr(weights, "precip_occurrence", 1.0))
         self.weight_amount = float(getattr(weights, "precip_amount", 1.0))
         self.weight_fraction = float(getattr(weights, "snow_fraction", 1.0))
+        self.weight_spectral = float(getattr(weights, "spectral", 0.0))
+
+    def _combina(
+        self, mask: torch.Tensor | None, spatial: torch.Tensor | None
+    ) -> torch.Tensor | None:
+        """Fonde maschera di validita' e peso spaziale in un unico peso per punto."""
+        if spatial is None:
+            return mask
+        return spatial if mask is None else mask * spatial
 
     def __call__(
         self, prediction: torch.Tensor, batch: dict[str, torch.Tensor]
@@ -130,26 +177,42 @@ class CompositeLoss:
         componenti: dict[str, torch.Tensor] = {}
         totale = prediction.sum() * 0.0
 
+        peso_spaziale = batch.get(KEY_SPATIAL_WEIGHT)
+        if peso_spaziale is not None:
+            # Arriva come (B, H, W) e va trasmesso su tutte le scadenze.
+            peso_spaziale = peso_spaziale.unsqueeze(1)
+
         for variabile in self.layout.variables:
             testa = self.layout.head_of(variabile)
 
             if testa == "gaussian":
                 bersaglio = _require(batch, f"target_{variabile}")
+                media = self.layout.select(prediction, variabile, "mean")
                 perdita = gaussian_nll(
-                    self.layout.select(prediction, variabile, "mean"),
+                    media,
                     self.layout.select(prediction, variabile, "log_var"),
                     bersaglio,
-                    batch.get(f"mask_{variabile}"),
+                    self._combina(batch.get(f"mask_{variabile}"), peso_spaziale),
                 )
                 componenti[f"{variabile}_nll"] = perdita
                 totale = totale + self.weight_gaussian * perdita
+
+                if self.weight_spectral > 0.0:
+                    # Solo sulle variabili continue: il termine spettrale su un campo a
+                    # code lunghe come la precipitazione peggiora le metriche di
+                    # occorrenza, come documentato in RESEARCH.md.
+                    spettrale = spectral_amplitude_loss(media, bersaglio)
+                    componenti[f"{variabile}_spectral"] = spettrale
+                    totale = totale + self.weight_spectral * spettrale
 
             elif testa == "hurdle":
                 occorrenza = _require(batch, f"target_{variabile}_occurrence")
                 perdita_occ = hurdle_occurrence_loss(
                     self.layout.select(prediction, variabile, "occurrence_logit"),
                     occorrenza,
-                    batch.get(f"mask_{variabile}_occurrence"),
+                    self._combina(
+                        batch.get(f"mask_{variabile}_occurrence"), peso_spaziale
+                    ),
                 )
                 componenti[f"{variabile}_occurrence"] = perdita_occ
                 totale = totale + self.weight_occurrence * perdita_occ
@@ -159,7 +222,7 @@ class CompositeLoss:
                 perdita_amt = hurdle_amount_loss(
                     self.layout.select(prediction, variabile, "amount"),
                     quantita,
-                    maschera,
+                    self._combina(maschera, peso_spaziale),
                 )
                 componenti[f"{variabile}_amount"] = perdita_amt
                 totale = totale + self.weight_amount * perdita_amt
@@ -170,7 +233,7 @@ class CompositeLoss:
                 perdita_fr = fraction_loss(
                     self.layout.select(prediction, variabile, "fraction_logit"),
                     frazione,
-                    maschera,
+                    self._combina(maschera, peso_spaziale),
                 )
                 componenti[f"{variabile}_fraction"] = perdita_fr
                 totale = totale + self.weight_fraction * perdita_fr
@@ -190,6 +253,7 @@ def _require(batch: dict[str, torch.Tensor], key: str) -> torch.Tensor:
 
 
 __all__ = [
+    "KEY_SPATIAL_WEIGHT",
     "MAX_LOG_VAR",
     "MIN_LOG_VAR",
     "CompositeLoss",
@@ -199,4 +263,5 @@ __all__ = [
     "hurdle_amount_loss",
     "hurdle_occurrence_loss",
     "masked_mean",
+    "spectral_amplitude_loss",
 ]

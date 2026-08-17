@@ -97,6 +97,10 @@ class LettoreFinto:
     def latitudes(self) -> np.ndarray:
         return np.linspace(75.0, 10.0, self._altezza).astype(np.float32)
 
+    @property
+    def longitudes(self) -> np.ndarray:
+        return np.linspace(-40.0, 60.0, self._larghezza).astype(np.float32)
+
     def valid_time(self, slot_index: int) -> datetime:
         return datetime(2024, 1, 1, 6, tzinfo=UTC) + timedelta(hours=6 * int(slot_index))
 

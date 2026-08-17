@@ -33,8 +33,10 @@ from dwf.data.features import (
     build_input_tensor,
     to_working_units,
 )
+from dwf.models.losses import KEY_SPATIAL_WEIGHT
 from dwf.slots import diurnal_reference_index
 from dwf.tables import FOLDS, read_table
+from dwf.weighting import spatial_weight
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
     from dwf.config import Config
@@ -408,7 +410,32 @@ class WeatherWindowDataset(Dataset):
         }
         campione.update(build_targets(self.specs, uscita, self.stats))
         campione.update(self._diurnal_baselines(ritagliata))
+        campione[KEY_SPATIAL_WEIGHT] = torch.from_numpy(
+            self._spatial_weight(latitudini, colonna)
+        )
         return campione
+
+    def _spatial_weight(self, latitudes: np.ndarray, column: int) -> np.ndarray:
+        """Peso per punto del ritaglio corrente.
+
+        Va ricalcolato per ogni ritaglio e non una volta sola: con ritagli casuali sia
+        le latitudini sia la posizione del punto di interesse cambiano da un campione
+        all'altro, e un peso fisso finirebbe applicato alla porzione sbagliata di
+        dominio.
+        """
+        parametri = self.config.training.spatial_weighting
+        longitudini = self.reader.longitudes
+        if self.crop_size is not None:
+            longitudini = longitudini[column : column + self.crop_size]
+        return spatial_weight(
+            latitudes,
+            longitudini,
+            use_area=parametri.use_area,
+            focus_gain=parametri.focus_gain,
+            focus_radius_deg=parametri.focus_radius_deg,
+            center_lat=parametri.focus_lat,
+            center_lon=parametri.focus_lon,
+        )
 
     def _diurnal_baselines(self, window: dict[str, np.ndarray]) -> dict[str, torch.Tensor]:
         """Riferimenti di ancoraggio del campione, col prefisso che li distingue dai target."""
