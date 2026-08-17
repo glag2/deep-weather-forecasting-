@@ -128,6 +128,10 @@ class ZarrWindowReader:
         return np.asarray(self._store.latitude.values, dtype=np.float32)
 
     @property
+    def longitudes(self) -> np.ndarray:
+        return np.asarray(self._store.longitude.values, dtype=np.float32)
+
+    @property
     def shape(self) -> tuple[int, int]:
         return int(self._store.sizes["latitude"]), int(self._store.sizes["longitude"])
 
