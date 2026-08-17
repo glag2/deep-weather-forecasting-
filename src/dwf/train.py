@@ -77,6 +77,7 @@ def build_network(config: Config, layout: OutputLayout, in_channels: int) -> Dee
             depth=config.model.depth,
             blocks_per_level=config.model.blocks_per_level,
             dropout=config.model.dropout,
+            variant=config.model.variant,
         ),
         layout,
     )

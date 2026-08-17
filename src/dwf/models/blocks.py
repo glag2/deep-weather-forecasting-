@@ -13,6 +13,8 @@ Due scelte non ovvie, motivate dal dominio:
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import torch
 import torch.nn.functional as functional
 from torch import nn
@@ -68,13 +70,14 @@ class EncoderStage(nn.Module):
     """Blocchi residui seguiti da dimezzamento della risoluzione."""
 
     def __init__(
-        self, in_channels: int, out_channels: int, n_blocks: int, dropout: float
+        self, in_channels: int, out_channels: int, n_blocks: int, dropout: float,
+        block: Callable[[int, int, float], nn.Module] = ResidualBlock,
     ) -> None:
         super().__init__()
         blocks: list[nn.Module] = []
         channels = in_channels
         for _ in range(n_blocks):
-            blocks.append(ResidualBlock(channels, out_channels, dropout))
+            blocks.append(block(channels, out_channels, dropout))
             channels = out_channels
         self.blocks = nn.Sequential(*blocks)
         self.downsample = nn.Conv2d(
@@ -96,14 +99,16 @@ class DecoderStage(nn.Module):
     """
 
     def __init__(
-        self, in_channels: int, skip_channels: int, out_channels: int, n_blocks: int, dropout: float
+        self, in_channels: int, skip_channels: int, out_channels: int, n_blocks: int,
+        dropout: float,
+        block: Callable[[int, int, float], nn.Module] = ResidualBlock,
     ) -> None:
         super().__init__()
         self.reduce = conv3x3(in_channels, out_channels)
         blocks: list[nn.Module] = []
         channels = out_channels + skip_channels
         for _ in range(n_blocks):
-            blocks.append(ResidualBlock(channels, out_channels, dropout))
+            blocks.append(block(channels, out_channels, dropout))
             channels = out_channels
         self.blocks = nn.Sequential(*blocks)
 

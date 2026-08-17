@@ -21,10 +21,10 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
+from dwf.models import variants
 from dwf.models.blocks import (
     DecoderStage,
     EncoderStage,
-    ResidualBlock,
     conv3x3,
     crop_padding,
     group_count,
@@ -43,6 +43,9 @@ class NetworkSpec:
     blocks_per_level: int = 2
     dropout: float = 0.0
     max_channels: int = 384
+    # Nome della variante di blocco. Cambiando solo questo restano identici scheletro,
+    # canali di ingresso e layout di uscita, quindi i risultati sono confrontabili.
+    variant: str = "conv"
 
     def __post_init__(self) -> None:
         if self.in_channels < 1:
@@ -55,6 +58,13 @@ class NetworkSpec:
             raise ValueError(f"blocks_per_level deve essere positivo: {self.blocks_per_level}")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError(f"dropout fuori range [0, 1): {self.dropout}")
+        # Fallisce subito, alla costruzione della specifica, invece che a meta'
+        # addestramento.
+        variants.get(self.variant)
+
+    @property
+    def block(self) -> variants.BlockFactory:
+        return variants.get(self.variant)
 
     def channels_at(self, level: int) -> int:
         return min(self.base_channels * 2**level, self.max_channels)
@@ -85,7 +95,9 @@ class DeepWeatherNet(nn.Module):
         for level in range(spec.depth):
             out_channels = spec.channels_at(level)
             self.encoders.append(
-                EncoderStage(channels, out_channels, spec.blocks_per_level, spec.dropout)
+                EncoderStage(
+                    channels, out_channels, spec.blocks_per_level, spec.dropout, spec.block
+                )
             )
             skip_channels.append(out_channels)
             channels = out_channels
@@ -93,7 +105,7 @@ class DeepWeatherNet(nn.Module):
         bottleneck_channels = spec.channels_at(spec.depth)
         self.bottleneck = nn.Sequential(
             *[
-                ResidualBlock(
+                spec.block(
                     channels if index == 0 else bottleneck_channels,
                     bottleneck_channels,
                     spec.dropout,
@@ -108,7 +120,8 @@ class DeepWeatherNet(nn.Module):
             out_channels = skip_channels[level]
             self.decoders.append(
                 DecoderStage(
-                    channels, out_channels, out_channels, spec.blocks_per_level, spec.dropout
+                    channels, out_channels, out_channels, spec.blocks_per_level,
+                    spec.dropout, spec.block,
                 )
             )
             channels = out_channels
