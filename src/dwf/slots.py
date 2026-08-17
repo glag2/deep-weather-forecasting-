@@ -17,7 +17,7 @@ from __future__ import annotations
 import calendar
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 
 import numpy as np
@@ -120,6 +120,50 @@ def expected_slot_times(
     out: list[datetime] = []
     for year, month in months:
         out.extend(month_slot_times(year, month, slot_hours))
+    return out
+
+
+def months_between(start: date, end: date) -> list[tuple[int, int]]:
+    """Coppie (anno, mese) toccate dall'intervallo, estremi inclusi."""
+    if start > end:
+        raise ValueError(f"start ({start}) successivo a end ({end})")
+    out: list[tuple[int, int]] = []
+    year, month = start.year, start.month
+    while (year, month) <= (end.year, end.month):
+        out.append((year, month))
+        month += 1
+        if month == 13:
+            year, month = year + 1, 1
+    return out
+
+
+def days_for_month(year: int, month: int, start: date, end: date) -> list[int]:
+    """Giorni del mese che ricadono nell'intervallo richiesto.
+
+    Serve perche' il periodo non comincia ne' finisce necessariamente a confine di
+    mese: il primo e l'ultimo mese sono parziali, e chiedere al CDS giorni fuori
+    dall'intervallo scaricherebbe dati che poi verrebbero scartati, oppure giorni non
+    ancora pubblicati.
+    """
+    n_days = calendar.monthrange(year, month)[1]
+    # Intersezione fra il mese e l'intervallo: gestisce in un colpo i mesi parziali,
+    # quelli interni interi e quelli completamente fuori intervallo.
+    first_day = max(start, date(year, month, 1))
+    last_day = min(end, date(year, month, n_days))
+    if first_day > last_day:
+        return []
+    return list(range(first_day.day, last_day.day + 1))
+
+
+def slot_times_between(
+    start: date, end: date, slot_hours: Sequence[int]
+) -> list[datetime]:
+    """Tutti gli istanti di slot nell'intervallo di date, estremi inclusi."""
+    out: list[datetime] = []
+    for year, month in months_between(start, end):
+        for day in days_for_month(year, month, start, end):
+            for hour in sorted(slot_hours):
+                out.append(datetime(year, month, day, hour, tzinfo=UTC))
     return out
 
 
@@ -236,6 +280,19 @@ def build_split_layout(
         "test": (test_start, n_slots),
     }
 
+    return layout_from_bounds(bounds, input_slots=input_slots, output_slots=output_slots)
+
+
+def layout_from_bounds(
+    bounds: dict[str, tuple[int, int]], *, input_slots: int, output_slots: int
+) -> SplitLayout:
+    """Enumera i campioni ammessi in ciascun blocco.
+
+    Un campione e' ammesso solo se l'intera finestra input+target ricade nel proprio
+    blocco: e' questo vincolo, non il gap, a impedire che un target di train compaia
+    tra gli input di validation.
+    """
+    total_window = input_slots + output_slots
     sample_starts: dict[str, tuple[int, ...]] = {}
     for name, (start, end) in bounds.items():
         last_start = end - total_window
@@ -255,6 +312,94 @@ def build_split_layout(
         input_slots=input_slots,
         output_slots=output_slots,
     )
+
+
+def max_rolling_folds(
+    n_slots: int,
+    *,
+    initial_train_slots: int,
+    val_slots: int,
+    test_slots: int,
+    gap_slots: int,
+    step_slots: int,
+) -> int:
+    """Quanti fold entrano nel periodo disponibile."""
+    if step_slots <= 0:
+        raise ValueError(f"step_slots deve essere positivo: {step_slots}")
+    horizon = gap_slots + val_slots + gap_slots + test_slots
+    available = n_slots - initial_train_slots - horizon
+    if available < 0:
+        return 0
+    return 1 + available // step_slots
+
+
+def build_rolling_folds(
+    n_slots: int,
+    *,
+    initial_train_slots: int,
+    val_slots: int,
+    test_slots: int,
+    gap_slots: int,
+    step_slots: int,
+    input_slots: int,
+    output_slots: int,
+    expanding: bool = True,
+    n_folds: int | None = None,
+) -> list[SplitLayout]:
+    """Validazione a finestra mobile (rolling origin) su fold cronologici.
+
+    Uno split unico in tre blocchi contigui concentra il test nella coda del periodo,
+    che quindi copre una sola stagione: le metriche misurerebbero il modello su un solo
+    regime meteorologico. Qui l'origine avanza di ``step_slots`` a ogni fold, cosi' i
+    blocchi di test scorrono nel tempo e insieme coprono tutte le stagioni, mentre
+    dentro ogni fold l'ordine train -> val -> test resta rispettato.
+
+    Con ``expanding=True`` il train cresce a ogni fold e usa tutta la storia
+    disponibile; con ``expanding=False`` scorre a lunghezza costante, utile per
+    verificare se il modello dipende dalla quantita' di storia o dalla sua vicinanza
+    temporale.
+    """
+    disponibili = max_rolling_folds(
+        n_slots,
+        initial_train_slots=initial_train_slots,
+        val_slots=val_slots,
+        test_slots=test_slots,
+        gap_slots=gap_slots,
+        step_slots=step_slots,
+    )
+    if disponibili == 0:
+        raise ValueError(
+            f"Con {n_slots} slot non entra nemmeno un fold: servono almeno "
+            f"{initial_train_slots + 2 * gap_slots + val_slots + test_slots} slot. "
+            f"Allungare il periodo o ridurre initial_train/val/test."
+        )
+    if n_folds is None:
+        n_folds = disponibili
+    elif n_folds > disponibili:
+        raise ValueError(
+            f"Richiesti {n_folds} fold ma nel periodo ne entrano {disponibili}."
+        )
+
+    folds: list[SplitLayout] = []
+    for index in range(n_folds):
+        train_end = initial_train_slots + index * step_slots
+        train_start = 0 if expanding else train_end - initial_train_slots
+        val_start = train_end + gap_slots
+        val_end = val_start + val_slots
+        test_start = val_end + gap_slots
+        test_end = test_start + test_slots
+        folds.append(
+            layout_from_bounds(
+                {
+                    "train": (train_start, train_end),
+                    "val": (val_start, val_end),
+                    "test": (test_start, test_end),
+                },
+                input_slots=input_slots,
+                output_slots=output_slots,
+            )
+        )
+    return folds
 
 
 def split_labels(n_slots: int, layout: SplitLayout) -> np.ndarray:

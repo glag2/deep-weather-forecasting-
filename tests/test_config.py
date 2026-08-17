@@ -57,12 +57,24 @@ def test_area_cds_e_nell_ordine_nord_ovest_sud_est() -> None:
     assert config.region.cds_area == [75.0, -40.0, 10.0, 60.0]
 
 
-def test_periodo_copre_ventiquattro_mesi() -> None:
+def test_periodo_configurato_copre_mesi_parziali() -> None:
     config = Config.load(CONFIG_PATH)
     months = config.time.months()
-    assert len(months) == 24
-    assert months[0] == (2024, 8)
-    assert months[-1] == (2026, 7)
+    assert months[0] == (2024, 1)
+    assert months[-1] == (2026, 8)
+    assert len(months) == 32
+    # L'ultimo mese si ferma al limite pubblicato da ERA5, non a fine mese.
+    assert config.time.days_in_month(2026, 8) == list(range(1, 12))
+    assert config.time.days_in_month(2024, 1) == list(range(1, 32))
+
+
+def test_numero_di_slot_coerente_con_gli_istanti_generati() -> None:
+    config = Config.load(CONFIG_PATH)
+    times = config.time.slot_times()
+    assert len(times) == config.time.n_slots
+    assert times[0].date().isoformat() == config.time.start
+    assert times[-1].date().isoformat() == config.time.end
+    assert sorted(times) == times
 
 
 def test_ore_orarie_richieste_per_le_cumulate() -> None:
@@ -123,8 +135,21 @@ def test_griglia_piu_grossa_riduce_i_punti(payload: dict[str, Any]) -> None:
 
 
 def test_periodo_invertito_e_rifiutato(payload: dict[str, Any]) -> None:
-    payload["time"]["start"], payload["time"]["end"] = "2026-07", "2024-08"
+    payload["time"]["start"], payload["time"]["end"] = "2026-07-01", "2024-08-01"
     with pytest.raises(ValidationError, match="successivo a end"):
+        build(payload)
+
+
+def test_data_inesistente_e_rifiutata(payload: dict[str, Any]) -> None:
+    """La regex accetta la forma: la validita' del giorno va controllata a parte."""
+    payload["time"]["start"] = "2024-02-31"
+    with pytest.raises(ValidationError, match="data non valida"):
+        build(payload)
+
+
+def test_formato_a_mese_non_e_piu_accettato(payload: dict[str, Any]) -> None:
+    payload["time"]["start"] = "2024-08"
+    with pytest.raises(ValidationError, match="should match pattern"):
         build(payload)
 
 
@@ -281,3 +306,48 @@ def test_data_root_assoluto_e_rispettato(payload: dict[str, Any], tmp_path: Path
     payload["paths"]["data_root"] = str(tmp_path / "altrove")
     config = build(payload)
     assert config.data_root == (tmp_path / "altrove").resolve()
+
+
+# --------------------------------------------------------------------------- #
+# Suddivisione temporale
+# --------------------------------------------------------------------------- #
+
+
+def test_i_fold_coprono_tutti_i_mesi_dell_anno() -> None:
+    """Motivo per cui esiste la finestra mobile: un test contiguo sarebbe solo estivo."""
+    config = Config.load(CONFIG_PATH)
+    times = config.time.slot_times()
+    coperti: set[int] = set()
+    for fold in config.build_folds():
+        start, stop = fold.bounds["test"]
+        coperti.update(t.month for t in times[start:stop])
+    assert coperti == set(range(1, 13))
+
+
+def test_i_fold_valutano_i_mesi_nevosi() -> None:
+    config = Config.load(CONFIG_PATH)
+    times = config.time.slot_times()
+    nevosi: set[int] = set()
+    for fold in config.build_folds():
+        start, stop = fold.bounds["test"]
+        nevosi.update(t.month for t in times[start:stop] if t.month in (12, 1, 2, 3))
+    assert nevosi == {12, 1, 2, 3}
+
+
+def test_modalita_cronologica_produce_un_solo_fold(payload: dict[str, Any]) -> None:
+    payload["split"]["mode"] = "chronological"
+    config = build(payload)
+    assert len(config.build_folds()) == 1
+
+
+def test_modalita_di_split_sconosciuta_e_rifiutata(payload: dict[str, Any]) -> None:
+    payload["split"]["mode"] = "casuale"
+    with pytest.raises(ValidationError):
+        build(payload)
+
+
+def test_passo_maggiore_del_test_e_rifiutato(payload: dict[str, Any]) -> None:
+    payload["split"]["step_days"] = 120
+    payload["split"]["test_days"] = 90
+    with pytest.raises(ValidationError, match="non verrebbero mai valutati"):
+        build(payload)

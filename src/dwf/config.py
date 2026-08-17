@@ -8,13 +8,24 @@ possano divergere su parametri condivisi (griglia, slot orari, lista variabili).
 from __future__ import annotations
 
 import os
+from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from dwf.slots import accumulation_coverage, required_hours, validate_accumulation_fits
+from dwf.slots import (
+    SplitLayout,
+    accumulation_coverage,
+    build_rolling_folds,
+    build_split_layout,
+    days_for_month,
+    months_between,
+    required_hours,
+    slot_times_between,
+    validate_accumulation_fits,
+)
 from dwf.variables import VariableSpec, spec_by_cds_name
 
 # Risoluzione nativa di ERA5 single levels: qualunque `grid` richiesto al CDS
@@ -85,14 +96,19 @@ class RegionConfig(_Base):
 class TimeConfig(_Base):
     """Periodo storico e cadenza degli slot previsti."""
 
-    start: Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
-    end: Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
+    start: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
+    end: Annotated[str, Field(pattern=r"^\d{4}-\d{2}-\d{2}$")]
     slot_hours: Annotated[list[Annotated[int, Field(ge=0, le=23)]], Field(min_length=1)]
     accum_window_hours: Annotated[int, Field(ge=1, le=24)] = 8
 
     @model_validator(mode="after")
     def _check_period(self) -> Self:
-        if self.start > self.end:
+        # La regex accetta la forma ma non la validita': 2024-02-31 la supererebbe.
+        try:
+            start_date, end_date = self.start_date, self.end_date
+        except ValueError as exc:
+            raise ValueError(f"data non valida: {exc}") from None
+        if start_date > end_date:
             raise ValueError(f"start ({self.start}) successivo a end ({self.end})")
         if sorted(self.slot_hours) != self.slot_hours:
             raise ValueError("slot_hours deve essere ordinato in modo crescente")
@@ -115,18 +131,31 @@ class TimeConfig(_Base):
     def slots_per_day(self) -> int:
         return len(self.slot_hours)
 
+    @property
+    def start_date(self) -> date:
+        return date.fromisoformat(self.start)
+
+    @property
+    def end_date(self) -> date:
+        return date.fromisoformat(self.end)
+
     def months(self) -> list[tuple[int, int]]:
-        """Elenco inclusivo di (anno, mese) coperto dalla configurazione."""
-        start_year, start_month = (int(part) for part in self.start.split("-"))
-        end_year, end_month = (int(part) for part in self.end.split("-"))
-        out: list[tuple[int, int]] = []
-        year, month = start_year, start_month
-        while (year, month) <= (end_year, end_month):
-            out.append((year, month))
-            month += 1
-            if month == 13:
-                year, month = year + 1, 1
-        return out
+        """Mesi toccati dal periodo, estremi inclusi. Il primo e l'ultimo sono parziali."""
+        return months_between(self.start_date, self.end_date)
+
+    def days_in_month(self, year: int, month: int) -> list[int]:
+        """Giorni da richiedere per quel mese, limitati al periodo configurato."""
+        return days_for_month(year, month, self.start_date, self.end_date)
+
+    def slot_times(self) -> list[datetime]:
+        """Tutti gli istanti di slot attesi nel periodo, in ordine crescente."""
+        return slot_times_between(self.start_date, self.end_date, self.slot_hours)
+
+    @property
+    def n_slots(self) -> int:
+        """Numero di slot attesi se non manca nulla."""
+        n_days = (self.end_date - self.start_date).days + 1
+        return n_days * self.slots_per_day
 
 
 class VariablesConfig(_Base):
@@ -252,15 +281,33 @@ class WindowsConfig(_Base):
 class SplitConfig(_Base):
     """Suddivisione temporale contigua in train / validation / test."""
 
+    mode: Literal["rolling", "chronological"] = "rolling"
+    gap_slots: Annotated[int, Field(ge=0)] = 30
+
+    # Usati solo con mode="chronological".
     train_fraction: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.7
     val_fraction: Annotated[float, Field(gt=0.0, lt=1.0)] = 0.15
-    gap_slots: Annotated[int, Field(ge=0)] = 30
+
+    # Usati solo con mode="rolling", espressi in giorni.
+    initial_train_days: Annotated[int, Field(ge=1)] = 330
+    val_days: Annotated[int, Field(ge=1)] = 60
+    test_days: Annotated[int, Field(ge=1)] = 90
+    step_days: Annotated[int, Field(ge=1)] = 90
+    expanding: bool = True
+    n_folds: Annotated[int, Field(ge=1)] | None = None
 
     @model_validator(mode="after")
     def _check_fractions(self) -> Self:
         if self.train_fraction + self.val_fraction >= 1.0:
             raise ValueError(
                 "train_fraction + val_fraction deve essere < 1.0 per lasciare spazio al test"
+            )
+        # Con passo maggiore del test i blocchi lasciano buchi non valutati; con passo
+        # minore si sovrappongono e le metriche pesano due volte gli stessi giorni.
+        if self.step_days > self.test_days:
+            raise ValueError(
+                f"step_days ({self.step_days}) maggiore di test_days ({self.test_days}): "
+                "alcuni periodi non verrebbero mai valutati"
             )
         return self
 
@@ -386,6 +433,43 @@ class Config(_Base):
         """Canali totali prodotti dalla rete: teste x lead time previsti."""
         per_slot = sum(target.n_output_channels for target in self.targets)
         return per_slot * self.windows.output_slots
+
+    # --- suddivisione temporale ---
+
+    def build_folds(self, n_slots: int | None = None) -> list[SplitLayout]:
+        """Fold di valutazione, uno solo se ``split.mode`` e' ``chronological``.
+
+        Accetta ``n_slots`` per poter usare il numero di slot effettivamente presenti
+        nell'archivio, che per dati mancanti puo' essere inferiore a quello atteso.
+        """
+        if n_slots is None:
+            n_slots = self.time.n_slots
+        per_day = self.time.slots_per_day
+
+        if self.split.mode == "chronological":
+            return [
+                build_split_layout(
+                    n_slots,
+                    train_fraction=self.split.train_fraction,
+                    val_fraction=self.split.val_fraction,
+                    gap_slots=self.split.gap_slots,
+                    input_slots=self.windows.input_slots,
+                    output_slots=self.windows.output_slots,
+                )
+            ]
+
+        return build_rolling_folds(
+            n_slots,
+            initial_train_slots=self.split.initial_train_days * per_day,
+            val_slots=self.split.val_days * per_day,
+            test_slots=self.split.test_days * per_day,
+            gap_slots=self.split.gap_slots,
+            step_slots=self.split.step_days * per_day,
+            input_slots=self.windows.input_slots,
+            output_slots=self.windows.output_slots,
+            expanding=self.split.expanding,
+            n_folds=self.split.n_folds,
+        )
 
     # --- percorsi derivati ---
 

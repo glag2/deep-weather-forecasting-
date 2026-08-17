@@ -11,10 +11,12 @@ region:
   grid: 0.25
 
 time:
-  # Estremi inclusivi, formato YYYY-MM. ERA5 ha ~5-6 giorni di latenza,
-  # quindi il mese corrente non e mai completo.
-  start: "2024-08"
-  end: "2026-07"
+  # Estremi inclusivi, formato YYYY-MM-DD. Il primo e l'ultimo mese possono essere
+  # parziali. `end` non e scelto a mano: e la data restituita da end_datetime nei
+  # metadati della collection CDS, verificata da scripts/check_cds_access.py.
+  # ERA5 ha ~6 giorni di latenza, quindi non arriva a oggi.
+  start: "2024-01-01"
+  end: "2026-08-11"
   # Slot giornalieri previsti: mattina / mezzogiorno / sera (UTC).
   slot_hours: [6, 12, 18]
   # Finestra di aggregazione per le variabili cumulate, in ore, centrata sullo slot.
@@ -29,6 +31,9 @@ variables:
     - 10m_u_component_of_wind
     - 10m_v_component_of_wind
     - total_cloud_cover
+    # Stato del manto nevoso: memoria fisica che condiziona la temperatura
+    # (albedo, fusione) e la persistenza della neve. Predittore, non target.
+    - snow_depth
   # Campi cumulati sull'ora precedente: richiedono cadenza oraria per essere aggregati.
   accumulated:
     - total_precipitation
@@ -66,11 +71,29 @@ windows:
   output_slots: 9
 
 split:
-  # Frazioni temporali contigue: train nel passato, test nel futuro.
+  # Validazione a finestra mobile. Uno split unico in tre blocchi contigui
+  # concentrerebbe il test nella coda del periodo, che qui e estiva: la neve non
+  # sarebbe valutabile e la temperatura verrebbe misurata su un solo regime.
+  # Con i fold l'origine avanza nel tempo e i blocchi di test coprono tutte le
+  # stagioni, mantenendo in ogni fold l'ordine train -> val -> test.
+  mode: rolling
+  # Storia minima prima del primo fold: circa 11 mesi, cosi il modello vede
+  # almeno un ciclo annuale completo prima di essere valutato.
+  initial_train_days: 330
+  val_days: 60
+  test_days: 90
+  # Passo pari alla lunghezza del test: i blocchi si susseguono senza buchi
+  # ne sovrapposizioni.
+  step_days: 90
+  # Il train cresce a ogni fold e usa tutta la storia disponibile.
+  expanding: true
+  # null = tutti i fold che entrano nel periodo.
+  n_folds: null
+  # Slot scartati alle giunzioni per attenuare l'autocorrelazione.
+  gap_slots: 30
+  # Usati solo con mode: chronological.
   train_fraction: 0.7
   val_fraction: 0.15
-  # Slot scartati alle giunzioni per evitare che una finestra attraversi due split.
-  gap_slots: 30
 
 model:
   base_channels: 48

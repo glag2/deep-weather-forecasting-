@@ -7,7 +7,7 @@ modello impara a prevedere l'istante sbagliato. Questi test bloccano le invarian
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import numpy as np
 import pytest
@@ -17,13 +17,18 @@ from dwf.slots import (
     accumulation_coverage,
     accumulation_hours,
     accumulation_offsets,
+    build_rolling_folds,
     build_split_layout,
+    days_for_month,
     expected_slot_times,
     expected_steps,
     find_gaps,
+    max_rolling_folds,
     month_slot_times,
+    months_between,
     required_hours,
     slot_of_day,
+    slot_times_between,
     split_labels,
     time_encoding,
     validate_accumulation_fits,
@@ -276,3 +281,156 @@ def test_encoding_distingue_le_stagioni() -> None:
 
 def test_encoding_su_serie_vuota() -> None:
     assert time_encoding([], SLOT_HOURS).shape == (0, 4)
+
+
+# --------------------------------------------------------------------------- #
+# Intervalli a granularita' di giorno
+# --------------------------------------------------------------------------- #
+
+
+def test_mesi_tra_due_date_includono_gli_estremi() -> None:
+    mesi = months_between(date(2024, 1, 15), date(2026, 8, 11))
+    assert mesi[0] == (2024, 1)
+    assert mesi[-1] == (2026, 8)
+    assert len(mesi) == 32
+    assert mesi == sorted(mesi)
+
+
+def test_mesi_tra_due_date_nello_stesso_mese() -> None:
+    assert months_between(date(2025, 5, 3), date(2025, 5, 27)) == [(2025, 5)]
+
+
+def test_mesi_con_start_dopo_end_sono_rifiutati() -> None:
+    with pytest.raises(ValueError, match="successivo a end"):
+        months_between(date(2025, 5, 1), date(2025, 4, 30))
+
+
+def test_giorni_del_primo_e_ultimo_mese_sono_troncati() -> None:
+    start, end = date(2024, 1, 20), date(2024, 3, 5)
+    assert days_for_month(2024, 1, start, end) == list(range(20, 32))
+    assert days_for_month(2024, 2, start, end) == list(range(1, 30))  # 2024 bisestile
+    assert days_for_month(2024, 3, start, end) == [1, 2, 3, 4, 5]
+
+
+def test_giorni_di_un_mese_fuori_intervallo_sono_vuoti() -> None:
+    start, end = date(2024, 1, 20), date(2024, 1, 25)
+    assert days_for_month(2024, 2, start, end) == []
+
+
+def test_giorni_di_mese_unico_sono_limitati_a_entrambi_gli_estremi() -> None:
+    assert days_for_month(2025, 6, date(2025, 6, 10), date(2025, 6, 12)) == [10, 11, 12]
+
+
+def test_slot_nell_intervallo_rispettano_estremi_e_ordine() -> None:
+    times = slot_times_between(date(2025, 3, 30), date(2025, 4, 2), [6, 12, 18])
+    assert len(times) == 4 * 3
+    assert times == sorted(times)
+    assert times[0] == datetime(2025, 3, 30, 6, tzinfo=UTC)
+    assert times[-1] == datetime(2025, 4, 2, 18, tzinfo=UTC)
+    assert all(t.tzinfo is UTC for t in times)
+
+
+def test_slot_nell_intervallo_coincidono_col_mese_intero() -> None:
+    """Su un mese completo le due funzioni devono dare lo stesso risultato."""
+    per_mese = month_slot_times(2025, 4, [6, 12, 18])
+    per_intervallo = slot_times_between(date(2025, 4, 1), date(2025, 4, 30), [6, 12, 18])
+    assert per_intervallo == per_mese
+
+
+# --------------------------------------------------------------------------- #
+# Validazione a finestra mobile
+# --------------------------------------------------------------------------- #
+
+ROLLING = {
+    "initial_train_slots": 990,
+    "val_slots": 180,
+    "test_slots": 270,
+    "gap_slots": 30,
+    "step_slots": 270,
+    "input_slots": 21,
+    "output_slots": 9,
+}
+
+
+def test_numero_di_fold_coerente_col_periodo() -> None:
+    args = {k: v for k, v in ROLLING.items() if k not in ("input_slots", "output_slots")}
+    atteso = max_rolling_folds(2862, **args)
+    folds = build_rolling_folds(2862, **ROLLING)
+    assert len(folds) == atteso == 6
+
+
+def test_ogni_fold_rispetta_ordine_cronologico_e_gap() -> None:
+    """In ogni fold il train precede val, che precede test, con il gap richiesto."""
+    for fold in build_rolling_folds(2862, **ROLLING):
+        train_start, train_end = fold.bounds["train"]
+        val_start, val_end = fold.bounds["val"]
+        test_start, test_end = fold.bounds["test"]
+        assert train_start < train_end
+        assert val_start - train_end == ROLLING["gap_slots"]
+        assert test_start - val_end == ROLLING["gap_slots"]
+        assert val_end - val_start == ROLLING["val_slots"]
+        assert test_end - test_start == ROLLING["test_slots"]
+
+
+def test_i_campioni_di_un_fold_non_attraversano_i_blocchi() -> None:
+    total = ROLLING["input_slots"] + ROLLING["output_slots"]
+    for fold in build_rolling_folds(2862, **ROLLING):
+        for nome, (start, end) in fold.bounds.items():
+            for inizio in fold.sample_starts[nome]:
+                assert inizio >= start
+                assert inizio + total <= end
+
+
+def test_nessuna_sovrapposizione_tra_split_dello_stesso_fold() -> None:
+    for fold in build_rolling_folds(2862, **ROLLING):
+        intervalli = [set(range(*fold.bounds[n])) for n in ("train", "val", "test")]
+        assert not intervalli[0] & intervalli[1]
+        assert not intervalli[1] & intervalli[2]
+        assert not intervalli[0] & intervalli[2]
+
+
+def test_i_test_dei_fold_si_susseguono_senza_buchi() -> None:
+    """Con step pari a test_slots i blocchi di test coprono il periodo senza lacune."""
+    folds = build_rolling_folds(2862, **ROLLING)
+    inizi = [f.bounds["test"][0] for f in folds]
+    fini = [f.bounds["test"][1] for f in folds]
+    assert inizi == sorted(inizi)
+    for precedente, successivo in zip(fini[:-1], inizi[1:], strict=True):
+        assert successivo == precedente
+
+
+def test_train_espansivo_parte_sempre_da_zero() -> None:
+    folds = build_rolling_folds(2862, expanding=True, **ROLLING)
+    assert all(f.bounds["train"][0] == 0 for f in folds)
+    lunghezze = [f.bounds["train"][1] - f.bounds["train"][0] for f in folds]
+    assert lunghezze == sorted(lunghezze)
+    assert lunghezze[0] < lunghezze[-1]
+
+
+def test_train_scorrevole_mantiene_lunghezza_costante() -> None:
+    folds = build_rolling_folds(2862, expanding=False, **ROLLING)
+    lunghezze = {f.bounds["train"][1] - f.bounds["train"][0] for f in folds}
+    assert lunghezze == {ROLLING["initial_train_slots"]}
+    assert folds[0].bounds["train"][0] == 0
+    assert folds[-1].bounds["train"][0] > 0
+
+
+def test_periodo_troppo_corto_per_un_fold_e_rifiutato() -> None:
+    with pytest.raises(ValueError, match="non entra nemmeno un fold"):
+        build_rolling_folds(500, **ROLLING)
+
+
+def test_numero_di_fold_eccessivo_e_rifiutato() -> None:
+    with pytest.raises(ValueError, match="ne entrano"):
+        build_rolling_folds(2862, n_folds=99, **ROLLING)
+
+
+def test_numero_di_fold_limitato_su_richiesta() -> None:
+    folds = build_rolling_folds(2862, n_folds=2, **ROLLING)
+    assert len(folds) == 2
+
+
+def test_passo_non_positivo_e_rifiutato() -> None:
+    args = {**ROLLING, "step_slots": 0}
+    with pytest.raises(ValueError, match="step_slots deve essere positivo"):
+        build_rolling_folds(2862, **args)
