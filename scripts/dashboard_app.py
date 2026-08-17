@@ -29,6 +29,7 @@ if str(PROJECT_ROOT / "src") not in sys.path:
 from dwf.config import Config  # noqa: E402
 from dwf.dashboard import (  # noqa: E402
     TECNOLOGIE,
+    coerenza_artefatti,
     confronto_visivo,
     copertura_mensile,
     curva_apprendimento,
@@ -202,11 +203,28 @@ elif sezione == "Modello":
         )
     else:
         metadati = info["metadati"]
+
+        problemi = coerenza_artefatti(config, int(fold))
+        if problemi:
+            st.error(
+                "**Artefatti incoerenti.** Il modello si carica lo stesso, ma non e' "
+                "detto che sia quello che si crede di avere:\n\n"
+                + "\n".join(f"- {p}" for p in problemi)
+            )
+
+        parametri = info.get("n_parametri")
         colonne = st.columns(4)
         colonne[0].metric("Variante", info["variante"])
-        colonne[1].metric("Parametri", f"{metadati.get('n_parameters', 0):,}")
-        colonne[2].metric("Canali in ingresso", metadati.get("n_input_channels", "?"))
+        colonne[1].metric("Parametri", f"{parametri:,}" if parametri else "non leggibili")
+        colonne[2].metric("Canali in ingresso", info.get("canali_ingresso") or "?")
         colonne[3].metric("Ancoraggio diurno", "attivo" if info["ancoraggio"] else "spento")
+
+        migliore = metadati.get("val_loss")
+        if migliore is not None:
+            st.caption(
+                f"Checkpoint salvato all'epoca {metadati.get('epoch', '?')} "
+                f"con perdita di validazione {migliore:.4f}."
+            )
 
         colonne = st.columns(4)
         colonne[0].metric("Canali base", info["canali_base"])

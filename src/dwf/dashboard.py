@@ -163,13 +163,44 @@ def copertura_mensile(config: Config) -> pl.DataFrame | None:
 
 
 def struttura_fold(config: Config) -> pl.DataFrame | None:
-    """Confini dei blocchi di ciascun fold, per vedere che test e train non si toccano."""
-    return _leggi(FOLDS, config.tables_dir)
+    """Confini dei blocchi di ciascun fold, per vedere che test e train non si toccano.
+
+    La tabella su disco ha una riga per slot e per fold, quindi decine di migliaia di
+    righe: mostrarla cosi' com'e' non fa vedere la struttura, la nasconde. Qui si
+    riduce ai confini, che sono l'unica cosa che serve per giudicare la separazione
+    fra blocchi.
+    """
+    tabella = _leggi(FOLDS, config.tables_dir)
+    if tabella is None or not tabella.height:
+        return None
+    return (
+        tabella.group_by("fold", "split")
+        .agg(
+            pl.col("slot_index").min().alias("primo_slot"),
+            pl.col("slot_index").max().alias("ultimo_slot"),
+            pl.len().alias("slot"),
+            pl.col("is_sample_start").sum().alias("inizi_ammessi"),
+        )
+        .sort("fold", "split")
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Modello
 # --------------------------------------------------------------------------- #
+
+
+def parametri_salvati(pesi: Path) -> int | None:
+    """Quanti parametri contiene davvero il file dei pesi.
+
+    Il conteggio si legge dal file invece che dalla configurazione perche' le due cose
+    possono divergere: se il checkpoint e' stato addestrato con un'altra impostazione,
+    e' il file a dire com'e' fatto il modello che si sta per caricare.
+    """
+    if not pesi.exists():
+        return None
+    with np.load(pesi, allow_pickle=False) as archivio:
+        return int(sum(archivio[nome].size for nome in archivio.files))
 
 
 def informazioni_modello(config: Config, fold: int) -> dict[str, Any]:
@@ -188,6 +219,8 @@ def informazioni_modello(config: Config, fold: int) -> dict[str, Any]:
         "percorso": str(destinazione),
         "metadati": metadati,
         "storia": storia,
+        "n_parametri": parametri_salvati(destinazione / "weights.npz"),
+        "canali_ingresso": metadati.get("in_channels"),
         "variante": config.model.variant,
         "ancoraggio": config.model.anchor_diurnal,
         "canali_base": config.model.base_channels,
@@ -205,6 +238,65 @@ def curva_apprendimento(informazioni: dict[str, Any]) -> pl.DataFrame | None:
     return pl.DataFrame(storia)
 
 
+def coerenza_artefatti(config: Config, fold: int) -> list[str]:
+    """Segnala artefatti incoerenti fra loro, che altrimenti passano inosservati.
+
+    Nasce da un guasto reale: un banco di prova che scriveva nella stessa cartella del
+    modello a scala piena ne ha sovrascritto pesi, statistiche e cronologia. Il modello
+    continuava a caricarsi senza errori, ma non era piu' quello addestrato. Un confronto
+    fra le date dei file e fra i canali attesi lo avrebbe reso evidente subito.
+
+    Restituisce un elenco di problemi in italiano, vuoto se non ce ne sono.
+    """
+    from dwf.data.features import InputLayout
+
+    destinazione = config.fold_dir(fold)
+    pesi = destinazione / "weights.npz"
+    if not pesi.exists():
+        return [f"Pesi assenti in {destinazione}"]
+
+    problemi: list[str] = []
+    metadati_path = destinazione / "metadata.json"
+    if not metadati_path.exists():
+        problemi.append("Pesi presenti ma metadata.json assente")
+        return problemi
+
+    metadati = json.loads(metadati_path.read_text(encoding="utf-8"))
+    attesi = InputLayout.from_config(config).n_channels
+    dichiarati = metadati.get("in_channels")
+    if dichiarati is not None and dichiarati != attesi:
+        problemi.append(
+            f"Il checkpoint e' stato addestrato con {dichiarati} canali, la "
+            f"configurazione attuale ne produce {attesi}"
+        )
+
+    quando_pesi = pesi.stat().st_mtime
+    for nome in ("norm_stats.parquet", "history.json"):
+        compagno = destinazione / nome
+        if not compagno.exists():
+            problemi.append(f"{nome} assente accanto ai pesi")
+            continue
+        # Una tolleranza di un minuto assorbe l'ordine di scrittura dentro la stessa
+        # esecuzione; oltre, il file viene da un'altra esecuzione.
+        if compagno.stat().st_mtime > quando_pesi + 60:
+            problemi.append(
+                f"{nome} e' piu' recente dei pesi di "
+                f"{int(compagno.stat().st_mtime - quando_pesi)} s: proviene "
+                "probabilmente da un'altra esecuzione"
+            )
+
+    storia_path = destinazione / "history.json"
+    if storia_path.exists() and (epoca := metadati.get("epoch")) is not None:
+        storia = json.loads(storia_path.read_text(encoding="utf-8"))
+        if storia and epoca >= len(storia):
+            problemi.append(
+                f"I metadati indicano l'epoca {epoca} ma la cronologia ne contiene "
+                f"{len(storia)}"
+            )
+
+    return problemi
+
+
 # --------------------------------------------------------------------------- #
 # Prestazioni
 # --------------------------------------------------------------------------- #
@@ -217,7 +309,11 @@ def metriche(config: Config, fold: int, split: str = "test") -> pl.DataFrame | N
         tabella = _leggi(METRICS, config.tables_dir)
     if tabella is None or not tabella.height:
         return None
-    return tabella.filter((pl.col("split") == split) & (pl.col("fold") == fold))
+    selezione = tabella.filter((pl.col("split") == split) & (pl.col("fold") == fold))
+    # Una tabella esistente ma senza righe per questo blocco significa "valutazione non
+    # ancora eseguita", non "nessun errore": va distinta, altrimenti la pagina mostra
+    # una tabella vuota che sembra un guasto.
+    return selezione if selezione.height else None
 
 
 def riepilogo_metriche(tabella: pl.DataFrame) -> pl.DataFrame:
@@ -339,15 +435,50 @@ def _istante_di(config: Config, inizio: int, scadenza: int) -> datetime | None:
     return slots["valid_time"][indice]
 
 
+def _percorso_cache(config: Config, fold: int, chiave: str) -> Path | None:
+    """File di cache per un calcolo pesante, valido finche' i pesi non cambiano.
+
+    La chiave include la data dei pesi, quindi riaddestrare invalida la cache da solo:
+    non serve ricordarsi di svuotarla, e non si rischia di mostrare la mappa di errore
+    di un modello che non esiste piu'.
+    """
+    pesi = config.fold_dir(fold) / "weights.npz"
+    if not pesi.exists():
+        return None
+    marca = int(pesi.stat().st_mtime)
+    cartella = config.fold_dir(fold) / "cache"
+    cartella.mkdir(parents=True, exist_ok=True)
+    return cartella / f"{chiave}_{marca}.npz"
+
+
 def mappa_errori(
-    config: Config, fold: int, *, split: str = "test", n_finestre: int = 12, scadenza: int = 2
+    config: Config,
+    fold: int,
+    *,
+    split: str = "test",
+    n_finestre: int = 12,
+    scadenza: int = 2,
+    usa_cache: bool = True,
 ) -> tuple[np.ndarray, int]:
     """Errore quadratico medio per cella, aggregato su piu' finestre.
 
     Mostra **dove** il modello sbaglia, che una metrica scalare non puo' dire: un errore
     concentrato sui rilievi ha cause diverse da uno diffuso sull'oceano.
+
+    Il calcolo richiede una passata della rete sull'intero dominio per ogni finestra, ed
+    e' stato misurato in decine di secondi: troppo per una pagina che si ricarica a ogni
+    interazione. Il risultato viene quindi conservato su disco.
     """
     import torch
+
+    cache = (
+        _percorso_cache(config, fold, f"mappa_{split}_{n_finestre}_{scadenza}")
+        if usa_cache
+        else None
+    )
+    if cache is not None and cache.exists():
+        with np.load(cache, allow_pickle=False) as archivio:
+            return archivio["mappa"], int(archivio["finestre"])
 
     from dwf.data.dataset import (
         KEY_FEATURES,
@@ -387,7 +518,10 @@ def mappa_errori(
         somma = quadrato if somma is None else somma + quadrato
 
     assert somma is not None
-    return np.sqrt(somma / len(inizi)), len(inizi)
+    mappa = np.sqrt(somma / len(inizi))
+    if cache is not None:
+        np.savez_compressed(cache, mappa=mappa, finestre=len(inizi))
+    return mappa, len(inizi)
 
 
 # --------------------------------------------------------------------------- #

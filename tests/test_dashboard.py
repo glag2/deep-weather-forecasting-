@@ -266,3 +266,115 @@ class TestModelloERisorse:
             assert nome and categoria and descrizione
             # La descrizione deve dire il ruolo nel progetto, non essere un'etichetta.
             assert len(descrizione) > 40
+
+
+# --------------------------------------------------------------------------- #
+# Coerenza fra artefatti
+# --------------------------------------------------------------------------- #
+
+
+def _scrivi_modello(
+    config: Config, fold: int, *, canali: int, epoca: int, epoche_storia: int
+) -> Path:
+    """Cartella di modello minima, con i soli file che la verifica guarda."""
+    import json
+
+    import numpy as np
+
+    destinazione = config.fold_dir(fold)
+    destinazione.mkdir(parents=True, exist_ok=True)
+    np.savez(destinazione / "weights.npz", peso=np.zeros(3, dtype=np.float32))
+    (destinazione / "metadata.json").write_text(
+        json.dumps({"in_channels": canali, "epoch": epoca}), encoding="utf-8"
+    )
+    (destinazione / "history.json").write_text(
+        json.dumps([{"epoch": i} for i in range(epoche_storia)]), encoding="utf-8"
+    )
+    pl.DataFrame({"variable": ["t2m"], "mean": [0.0]}).write_parquet(
+        destinazione / "norm_stats.parquet"
+    )
+    return destinazione
+
+
+def test_la_coerenza_segnala_i_pesi_mancanti(config: Config) -> None:
+    from dwf.dashboard import coerenza_artefatti
+
+    problemi = coerenza_artefatti(config, 0)
+    assert len(problemi) == 1
+    assert "Pesi assenti" in problemi[0]
+
+
+def test_la_coerenza_accetta_una_cartella_scritta_in_una_sola_esecuzione(
+    config: Config,
+) -> None:
+    from dwf.dashboard import coerenza_artefatti
+    from dwf.data.features import InputLayout
+
+    canali = InputLayout.from_config(config).n_channels
+    _scrivi_modello(config, 0, canali=canali, epoca=2, epoche_storia=3)
+    assert coerenza_artefatti(config, 0) == []
+
+
+def test_la_coerenza_rileva_i_canali_incompatibili(config: Config) -> None:
+    from dwf.dashboard import coerenza_artefatti
+
+    _scrivi_modello(config, 0, canali=999, epoca=0, epoche_storia=1)
+    problemi = coerenza_artefatti(config, 0)
+    assert any("999 canali" in p for p in problemi)
+
+
+def test_la_coerenza_rileva_i_file_scritti_da_un_altra_esecuzione(
+    config: Config, tmp_path: Path
+) -> None:
+    """Il guasto reale: un banco che scrive nella cartella del modello a scala piena.
+
+    I pesi restano quelli buoni, ma statistiche e cronologia vengono da un'altra
+    esecuzione. Nulla solleva un errore, e il modello caricato non e' piu' quello che
+    si crede di avere. Le date dei file lo dicono.
+    """
+    import os
+    import time
+
+    from dwf.dashboard import coerenza_artefatti
+    from dwf.data.features import InputLayout
+
+    canali = InputLayout.from_config(config).n_channels
+    destinazione = _scrivi_modello(config, 0, canali=canali, epoca=1, epoche_storia=2)
+
+    adesso = time.time()
+    os.utime(destinazione / "weights.npz", (adesso - 3600, adesso - 3600))
+    os.utime(destinazione / "history.json", (adesso, adesso))
+
+    problemi = coerenza_artefatti(config, 0)
+    assert any("history.json" in p and "altra esecuzione" in p for p in problemi)
+
+
+def test_la_coerenza_rileva_una_cronologia_piu_corta_dell_epoca_dichiarata(
+    config: Config,
+) -> None:
+    from dwf.dashboard import coerenza_artefatti
+    from dwf.data.features import InputLayout
+
+    canali = InputLayout.from_config(config).n_channels
+    _scrivi_modello(config, 0, canali=canali, epoca=16, epoche_storia=3)
+    problemi = coerenza_artefatti(config, 0)
+    assert any("epoca 16" in p and "3" in p for p in problemi)
+
+
+def test_la_cache_cambia_nome_quando_i_pesi_cambiano(config: Config) -> None:
+    """Senza legame con i pesi, la cache mostrerebbe la mappa di un modello superato."""
+    import os
+    import time
+
+    from dwf.dashboard import _percorso_cache
+
+    assert _percorso_cache(config, 0, "mappa") is None
+
+    _scrivi_modello(config, 0, canali=1, epoca=0, epoche_storia=1)
+    primo = _percorso_cache(config, 0, "mappa")
+    assert primo is not None
+
+    pesi = config.fold_dir(0) / "weights.npz"
+    dopo = time.time() + 120
+    os.utime(pesi, (dopo, dopo))
+    assert _percorso_cache(config, 0, "mappa") != primo
