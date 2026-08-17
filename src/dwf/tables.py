@@ -111,6 +111,7 @@ NORM_STATS = TableSpec(
     schema={
         "variable": pl.String,
         "transform": pl.String,
+        "transform_scale": pl.Float64,
         "mean": pl.Float64,
         "std": pl.Float64,
         "minimum": pl.Float64,
@@ -122,12 +123,19 @@ NORM_STATS = TableSpec(
 
 METRICS = TableSpec(
     filename="metrics.parquet",
-    description="Metriche per modello, split, variabile e lead time.",
+    description="Metriche per modello, fold, split, variabile, lead time e mese.",
     schema={
         "model": pl.String,
         "split": pl.String,
+        # Con la validazione a finestra mobile ogni fold ha il proprio test set: senza
+        # questa colonna le metriche di fold diversi si sommerebbero fra loro.
+        "fold": pl.Int16,
         "variable": pl.String,
         "lead_slot": pl.Int16,
+        # -1 significa "tutti i mesi". La stratificazione per mese e' necessaria
+        # perche' la frequenza di base della neve varia di ordini di grandezza
+        # nell'anno e una metrica aggregata direbbe soprattutto in che stagione siamo.
+        "month": pl.Int16,
         "metric": pl.String,
         "value": pl.Float64,
         "n_values": pl.Int64,
@@ -140,6 +148,7 @@ RELIABILITY = TableSpec(
     schema={
         "model": pl.String,
         "split": pl.String,
+        "fold": pl.Int16,
         "variable": pl.String,
         "lead_slot": pl.Int16,
         "bin_lower": pl.Float64,

@@ -152,8 +152,10 @@ def test_cast_riordina_e_converte() -> None:
             "value": [1.0],
             "model": ["persistence"],
             "split": ["test"],
+            "fold": [0],
             "variable": ["t2m"],
             "lead_slot": [1],
+            "month": [1],
             "metric": ["rmse"],
             "n_values": [10],
         }
