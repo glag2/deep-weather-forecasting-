@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import math
 import statistics
 import sys
 import time
@@ -162,6 +163,20 @@ def main() -> None:
     print(f"\nrelazione scritta in {args.output}")
 
 
+def _dispersione_fra_semi(esiti: list[Esito]) -> float:
+    """Dispersione fra ripetizioni, messa in comune fra le impostazioni.
+
+    Ogni impostazione ha pochi semi, e la sua dispersione presa da sola sarebbe una
+    stima troppo instabile per decidere qualcosa. Poiche' il rumore fra ripetizioni non
+    dipende dalla lunghezza della finestra, le varianze si possono mettere in comune:
+    si ottiene una stima con molti piu' gradi di liberta' a partire dagli stessi dati.
+    """
+    varianze = [statistics.variance(e.rmse) for e in esiti if len(e.rmse) > 1]
+    if not varianze:
+        return float("nan")
+    return math.sqrt(statistics.fmean(varianze))
+
+
 def scrivi(esiti: list[Esito], args) -> None:
     validi = [e for e in esiti if e.rmse]
     righe = [
@@ -178,8 +193,9 @@ def scrivi(esiti: list[Esito], args) -> None:
         "Ogni impostazione e' percio' misurata contro la persistenza diurna calcolata",
         "**sulle sue stesse finestre**, e si confronta il **guadagno** su quel",
         "riferimento. Ogni impostazione e' ripetuta con piu' semi, perche' il rumore fra",
-        "ripetizioni (0,059 degC, vedi `VARIANTS.md`) e' dello stesso ordine delle",
-        "differenze attese.",
+        "ripetizioni e' dello stesso ordine delle differenze attese: il banco delle",
+        "varianti lo misura in 0,059 degC, e qui viene stimato di nuovo sui propri dati",
+        "invece di essere dato per noto.",
         "",
         "## Protocollo",
         "",
@@ -207,8 +223,10 @@ def scrivi(esiti: list[Esito], args) -> None:
 
     if validi:
         migliore = max(validi, key=lambda e: e.guadagno)
-        distacco = sorted((e.guadagno for e in validi), reverse=True)
-        margine = distacco[0] - distacco[1] if len(distacco) > 1 else float("nan")
+        ordinati = sorted(validi, key=lambda e: e.guadagno, reverse=True)
+        margine = (
+            ordinati[0].guadagno - ordinati[1].guadagno if len(ordinati) > 1 else float("nan")
+        )
         righe += [
             "",
             "## Lettura",
@@ -217,18 +235,48 @@ def scrivi(esiti: list[Esito], args) -> None:
             f"sul proprio riferimento).",
             "",
         ]
-        if margine == margine and margine < 0.059:
+        # Il margine e' una differenza fra **medie** di piu' semi, quindi non va
+        # confrontato con la dispersione di una singola misura: quella sovrastima
+        # l'incertezza della media e farebbe dichiarare reale meta' delle differenze
+        # dovute al caso. Il metro giusto e' l'errore standard della differenza,
+        # ricavato dalla dispersione fra semi misurata in questo stesso banco.
+        dispersione = _dispersione_fra_semi(validi)
+        soglia = float("nan")
+        if dispersione == dispersione and len(ordinati) > 1:
+            campioni_primo = max(len(ordinati[0].rmse), 1)
+            campioni_secondo = max(len(ordinati[1].rmse), 1)
+            soglia = 2.0 * dispersione * math.sqrt(1 / campioni_primo + 1 / campioni_secondo)
+
+        if margine != margine or soglia != soglia:
+            righe.append("Semi insufficienti per stimare l'incertezza del confronto.")
+        elif margine < soglia:
+            # Fra impostazioni che il banco non riesce a separare si sceglie la piu'
+            # economica, non la piu' corta in assoluto: la piu' corta puo' benissimo
+            # essere una di quelle nettamente peggiori.
+            equivalenti = [
+                e for e in validi if migliore.guadagno - e.guadagno < soglia
+            ]
+            scelta = min(equivalenti, key=lambda e: e.canali)
+            elenco = ", ".join(
+                f"{e.giorni} giorni" for e in sorted(equivalenti, key=lambda e: e.giorni)
+            )
             righe += [
-                f"Il margine sul secondo classificato e' {margine:.3f} degC, **inferiore**",
-                "al rumore fra ripetizioni (0,059 degC): la differenza non e' misurabile a",
-                "questo budget. In questo caso conviene la finestra piu' corta fra quelle",
-                "equivalenti, perche' costa meno canali, meno memoria e piu' finestre",
-                "utilizzabili.",
+                f"Il margine sul secondo classificato e' {margine:.3f} degC, **inferiore** ai "
+                f"{soglia:.3f} degC di incertezza a due deviazioni standard (dispersione fra "
+                f"semi {dispersione:.3f} degC, misurata qui): la differenza non e'",
+                "distinguibile dal caso a questo budget.",
+                "",
+                f"Impostazioni non separabili dalla migliore: {elenco}. Fra queste si sceglie "
+                f"la piu' economica, cioe' **{scelta.giorni} giorni** ({scelta.canali} canali), "
+                "perche' a parita' di risultato misurabile costa meno memoria e lascia piu'",
+                "finestre utilizzabili. Le altre impostazioni restano fuori: non sono",
+                "equivalenti, sono misurabilmente peggiori.",
             ]
         else:
             righe += [
-                f"Il margine sul secondo classificato e' {margine:.3f} degC, **superiore**",
-                "al rumore fra ripetizioni (0,059 degC): la differenza e' reale.",
+                f"Il margine sul secondo classificato e' {margine:.3f} degC, **superiore** ai "
+                f"{soglia:.3f} degC di incertezza a due deviazioni standard (dispersione fra "
+                f"semi {dispersione:.3f} degC): la differenza sopravvive al rumore.",
             ]
         righe += [
             "",
