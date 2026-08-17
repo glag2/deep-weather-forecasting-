@@ -7,9 +7,12 @@ ripresa, riprovi e scrittura atomica senza credenziali e senza attese in coda.
 
 from __future__ import annotations
 
+import importlib.util
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import polars as pl
 import pytest
 
 from dwf.config import Config
@@ -24,6 +27,7 @@ from dwf.data.download import (
     run_task,
     run_tasks,
 )
+from dwf.tables import DOWNLOADS, UTC_TIMESTAMP, validate_schema
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 
@@ -302,3 +306,61 @@ def test_i_record_del_manifest_descrivono_i_task(config: Config) -> None:
 
 def test_manifest_vuoto_su_lista_vuota() -> None:
     assert outcomes_to_records([]) == []
+
+
+# --------------------------------------------------------------------------- #
+# Manifest storico
+# --------------------------------------------------------------------------- #
+
+
+def _carica_script_download():
+    """Importa lo script come modulo: la sua write_manifest non e' in libreria."""
+    percorso = Path(__file__).resolve().parents[1] / "scripts" / "download_era5.py"
+    spec = importlib.util.spec_from_file_location("script_download_era5", percorso)
+    assert spec is not None and spec.loader is not None
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+def test_lo_script_accoda_a_un_manifest_privo_delle_colonne_nuove(config: Config) -> None:
+    """Regressione: un manifest scritto prima che lo schema acquisisse i giorni.
+
+    Lo scaricamento procede a ondate lunghe ore. Se una nuova ondata rifiutasse il
+    registro delle precedenti, l'unico modo per ripartire sarebbe cancellarlo, cioe'
+    perdere la storia proprio del processo piu' lungo del progetto.
+    """
+    storico = pl.DataFrame(
+        {
+            "kind": ["instantaneous"],
+            "year": pl.Series([2024], dtype=pl.Int16),
+            "month": pl.Series([1], dtype=pl.Int8),
+            "filename": ["vecchio.grib"],
+            "n_variables": pl.Series([3], dtype=pl.Int32),
+            "n_hours": pl.Series([3], dtype=pl.Int32),
+            "status": ["downloaded"],
+            "size_bytes": pl.Series([10], dtype=pl.Int64),
+            "seconds": pl.Series([1.0], dtype=pl.Float64),
+            "message": [None],
+            "recorded_at": pl.Series([datetime(2024, 1, 1, tzinfo=UTC)]).cast(UTC_TIMESTAMP),
+        }
+    )
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    storico.write_parquet(DOWNLOADS.path(config.tables_dir))
+
+    script = _carica_script_download()
+    esito = DownloadOutcome(
+        task=primo_task(config), status="downloaded", size_bytes=99, seconds=2.0
+    )
+    percorso = script.write_manifest([esito], config)
+
+    assert percorso is not None
+    rilette = pl.read_parquet(percorso)
+    validate_schema(rilette, DOWNLOADS)
+    # La riga storica sopravvive, con i giorni ignoti a nullo.
+    vecchia = rilette.filter(pl.col("filename") == "vecchio.grib")
+    assert vecchia.height == 1
+    assert vecchia["n_days"][0] is None
+    # E la nuova riga porta il dato completo.
+    nuova = rilette.filter(pl.col("filename") == primo_task(config).target.name)
+    assert nuova["n_days"][0] == len(primo_task(config).days)

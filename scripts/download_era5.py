@@ -36,8 +36,9 @@ from dwf.data.download import (
     outcomes_to_records,
     run_task,
 )
+from dwf.data.freshness import read_manifest
 from dwf.slots import parse_month
-from dwf.tables import DOWNLOADS, cast_to_schema, read_table, write_table
+from dwf.tables import DOWNLOADS, cast_to_schema, write_table
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -114,9 +115,12 @@ def write_manifest(outcomes: list[DownloadOutcome], config: Config) -> Path | No
         return None
     frame = cast_to_schema(pl.DataFrame(records), DOWNLOADS)
 
-    esistente = DOWNLOADS.path(config.tables_dir)
-    if esistente.exists():
-        precedente = read_table(DOWNLOADS, config.tables_dir)
+    # Si usa il lettore tollerante di `freshness`, non `read_table`: un manifest
+    # scritto prima che lo schema acquisisse `n_days` e `last_day` e' storia valida, e
+    # rifiutarlo bloccherebbe il download costringendo a cancellare il registro delle
+    # ondate precedenti. Le colonne assenti entrano vuote e si riallineano qui.
+    precedente = read_manifest(config)
+    if precedente is not None:
         frame = (
             pl.concat([precedente, frame])
             .sort("recorded_at")
