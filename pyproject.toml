@@ -31,6 +31,12 @@ notebooks = [
     "ipywidgets>=8.1",
     "ipykernel>=6.29",
 ]
+# Extra separato: la dashboard e' uno strumento di ispezione, non serve per addestrare
+# ne' per prevedere, e non deve appesantire l'immagine di esecuzione.
+dashboard = [
+    "streamlit>=1.40",
+    "psutil>=6.0",
+]
 
 [project.scripts]
 dwf = "dwf.cli:main"
