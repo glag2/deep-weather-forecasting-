@@ -6,9 +6,16 @@ vengono saltati, quindi un'interruzione non obbliga a ricominciare.
 Conviene misurare prima di accodare tutto: `--limit 2` scarica un solo mese e riporta
 dimensione e tempo reali, da cui si stima il totale senza indovinare.
 
+`--from-month` e `--to-month` scaricano un sottoinsieme del periodo **senza toccare la
+configurazione**. Serve perche' accorciare `time.start` per scaricare meno ridurrebbe
+anche i fold di validazione: sul periodo 2025-01..2026-08 ne entra uno solo, con 4 mesi
+valutati su 12. Il periodo configurato resta quindi intero e il download procede a
+ondate, dalle piu' recenti alle piu' vecchie.
+
 Uso:
     python scripts/download_era5.py --dry-run
     python scripts/download_era5.py --limit 2
+    python scripts/download_era5.py --from-month 2025-01
     python scripts/download_era5.py
 """
 
@@ -22,13 +29,15 @@ import polars as pl
 from dwf.config import Config
 from dwf.data.download import (
     DownloadOutcome,
+    DownloadTask,
     build_payload,
     build_tasks,
     make_client,
     outcomes_to_records,
     run_task,
 )
-from dwf.tables import DOWNLOADS, cast_to_schema, write_table
+from dwf.slots import parse_month
+from dwf.tables import DOWNLOADS, cast_to_schema, read_table, write_table
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,6 +49,37 @@ def human_size(n_bytes: int) -> str:
             return f"{valore:.1f} {unita}"
         valore /= 1024
     return f"{valore:.1f} GB"
+
+
+def month_argument(value: str) -> tuple[int, int]:
+    try:
+        return parse_month(value)
+    except ValueError as errore:
+        raise argparse.ArgumentTypeError(str(errore)) from None
+
+
+def filter_tasks(
+    tasks: list[DownloadTask],
+    *,
+    from_month: tuple[int, int] | None,
+    to_month: tuple[int, int] | None,
+) -> list[DownloadTask]:
+    """Restringe i task mensili a un intervallo, tenendo sempre i campi statici.
+
+    Gli statici servono a qualunque ondata, quindi non vengono mai esclusi.
+    """
+    selezionati: list[DownloadTask] = []
+    for task in tasks:
+        if task.year is None or task.month is None:
+            selezionati.append(task)
+            continue
+        chiave = (task.year, task.month)
+        if from_month is not None and chiave < from_month:
+            continue
+        if to_month is not None and chiave > to_month:
+            continue
+        selezionati.append(task)
+    return selezionati
 
 
 def show_plan(config: Config, tasks: list, limite: int | None) -> None:
@@ -60,10 +100,24 @@ def show_plan(config: Config, tasks: list, limite: int | None) -> None:
 
 
 def write_manifest(outcomes: list[DownloadOutcome], config: Config) -> Path | None:
+    """Aggiorna il manifest conservando le righe delle sessioni precedenti.
+
+    Il download procede a ondate, quindi sovrascrivere il file perderebbe l'esito di
+    quelle gia' concluse. Per ogni file si tiene la registrazione piu' recente.
+    """
     records = outcomes_to_records(outcomes)
     if not records:
         return None
     frame = cast_to_schema(pl.DataFrame(records), DOWNLOADS)
+
+    esistente = DOWNLOADS.path(config.tables_dir)
+    if esistente.exists():
+        precedente = read_table(DOWNLOADS, config.tables_dir)
+        frame = (
+            pl.concat([precedente, frame])
+            .sort("recorded_at")
+            .unique(subset=["filename"], keep="last", maintain_order=True)
+        )
     return write_table(frame, DOWNLOADS, config.tables_dir)
 
 
@@ -72,13 +126,26 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "default.yaml")
     parser.add_argument("--env-file", type=Path, default=PROJECT_ROOT / ".env")
     parser.add_argument("--limit", type=int, default=None, help="Esegui solo i primi N task.")
+    parser.add_argument(
+        "--from-month", type=month_argument, default=None, metavar="YYYY-MM",
+        help="Scarica solo dai mesi indicati in avanti (i campi statici restano inclusi).",
+    )
+    parser.add_argument(
+        "--to-month", type=month_argument, default=None, metavar="YYYY-MM",
+        help="Scarica solo fino al mese indicato compreso.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Mostra il piano e termina.")
     parser.add_argument("--overwrite", action="store_true", help="Riscarica anche cio' che c'e'.")
     parser.add_argument("--stop-on-error", action="store_true")
     args = parser.parse_args()
 
     config = Config.load(args.config, project_root=PROJECT_ROOT)
-    tasks = build_tasks(config)
+    tasks = filter_tasks(
+        build_tasks(config), from_month=args.from_month, to_month=args.to_month
+    )
+    if not tasks:
+        print("Nessun task selezionato: controllare --from-month / --to-month.")
+        raise SystemExit(2)
     show_plan(config, tasks, args.limit)
 
     if args.dry_run:
