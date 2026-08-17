@@ -420,3 +420,59 @@ def test_nessun_inizio_ammesso_se_la_finestra_supera_i_dati(config: Config) -> N
         update={"windows": config.windows.model_copy(update={"input_slots": 40, "output_slots": 9})}
     )
     assert sample_starts(enorme, 0, "train") == []
+
+
+# --------------------------------------------------------------------------- #
+# Impronta dei dati
+# --------------------------------------------------------------------------- #
+
+
+def test_ingerire_altri_mesi_viene_rilevato(config: Config) -> None:
+    """Il caso concreto da evitare: valutare un modello vecchio su fold nuovi.
+
+    Ingerire altri mesi riscrive il catalogo e sposta i confini. Il checkpoint continua
+    a caricarsi, la valutazione gira senza errori, e gira su finestre che
+    all'addestramento stavano nel blocco di train. Il risultato sarebbe falso e
+    migliore del vero, cioe' il tipo di errore che nessuno va a cercare.
+    """
+    from dwf.data.dataset import confronta_impronte, data_fingerprint
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_catalogo(config, [True] * 20)
+    prima = data_fingerprint(config, 0)
+
+    # Arrivano altri mesi: piu' slot, confini diversi.
+    _scrivi_catalogo(config, [True] * 40)
+    dopo = data_fingerprint(config, 0)
+
+    differenze = confronta_impronte(prima, dopo)
+    assert differenze, "una riscrittura del catalogo deve essere segnalata"
+    assert any("slot" in d for d in differenze)
+
+
+def test_dati_immutati_non_generano_segnalazioni(config: Config) -> None:
+    from dwf.data.dataset import confronta_impronte, data_fingerprint
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_catalogo(config, [True] * 20)
+    impronta = data_fingerprint(config, 0)
+    assert confronta_impronte(impronta, data_fingerprint(config, 0)) == []
+
+
+def test_un_checkpoint_senza_impronta_viene_dichiarato_non_verificabile(
+    config: Config,
+) -> None:
+    """L'assenza dell'impronta non e' assenza di differenze.
+
+    I checkpoint salvati prima di questa modifica non dichiarano la propria origine:
+    dirlo esplicitamente e' l'unica risposta onesta, tacere equivarrebbe a dichiararli
+    coerenti.
+    """
+    from dwf.data.dataset import confronta_impronte, data_fingerprint
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_catalogo(config, [True] * 20)
+    for mancante in (None, {}):
+        avvisi = confronta_impronte(mancante, data_fingerprint(config, 0))
+        assert len(avvisi) == 1
+        assert "non dichiara" in avvisi[0]

@@ -344,6 +344,83 @@ def sample_starts(config: Config, fold: int, split: str) -> list[int]:
     ]
 
 
+def data_fingerprint(config: Config, fold: int) -> dict[str, object]:
+    """Su quali dati e' stato addestrato un modello, in forma confrontabile.
+
+    Ingerire altri mesi riscrive `slots.parquet` e `folds.parquet`: gli stessi indici
+    numerici passano a indicare istanti diversi e i confini fra addestramento,
+    validazione e test si spostano. Un checkpoint precedente continuerebbe a caricarsi
+    senza lamentarsi, e la sua valutazione girerebbe su finestre che al momento
+    dell'addestramento stavano dall'altra parte del confine. Nessun errore visibile, un
+    risultato falso e ottimista.
+
+    Registrare qui la forma dei dati permette di accorgersene dopo, confrontando questa
+    impronta con quella del momento.
+    """
+    utilizzabili = usable_mask(config)
+    impronta: dict[str, object] = {
+        "input_slots": int(config.windows.input_slots),
+        "output_slots": int(config.windows.output_slots),
+        "slot_utilizzabili": int(utilizzabili.sum()),
+        "slot_catalogati": int(utilizzabili.size),
+    }
+    for split in ("train", "val", "test"):
+        inizi = sample_starts(config, fold, split)
+        impronta[split] = {
+            "finestre": len(inizi),
+            "primo": int(inizi[0]) if inizi else None,
+            "ultimo": int(inizi[-1]) if inizi else None,
+        }
+    return impronta
+
+
+def confronta_impronte(
+    registrata: dict[str, object] | None, corrente: dict[str, object]
+) -> list[str]:
+    """Differenze fra i dati di addestramento e quelli attuali.
+
+    Un elenco vuoto significa che i due insiemi coincidono. L'assenza dell'impronta non
+    e' assenza di differenze: viene detta a parte, perche' un checkpoint che non
+    dichiara la propria origine resta non verificato.
+    """
+    if not registrata:
+        return [
+            "Il checkpoint non dichiara su quali dati e' stato addestrato: e' stato "
+            "salvato prima che l'impronta venisse registrata. Non si puo' verificare "
+            "che i confini dei fold siano ancora quelli."
+        ]
+
+    differenze: list[str] = []
+    for chiave, etichetta in (
+        ("input_slots", "slot in ingresso"),
+        ("output_slots", "slot in uscita"),
+        ("slot_utilizzabili", "slot utilizzabili nello store"),
+        ("slot_catalogati", "slot catalogati"),
+    ):
+        prima, adesso = registrata.get(chiave), corrente.get(chiave)
+        if prima != adesso:
+            differenze.append(f"{etichetta}: {prima} all'addestramento, {adesso} adesso")
+
+    for split in ("train", "val", "test"):
+        prima = registrata.get(split) or {}
+        adesso = corrente.get(split) or {}
+        if not isinstance(prima, dict) or not isinstance(adesso, dict):
+            continue
+        if prima.get("primo") != adesso.get("primo") or prima.get("ultimo") != adesso.get(
+            "ultimo"
+        ):
+            differenze.append(
+                f"confini di {split}: {prima.get('primo')}-{prima.get('ultimo')} "
+                f"all'addestramento, {adesso.get('primo')}-{adesso.get('ultimo')} adesso"
+            )
+        elif prima.get("finestre") != adesso.get("finestre"):
+            differenze.append(
+                f"finestre di {split}: {prima.get('finestre')} all'addestramento, "
+                f"{adesso.get('finestre')} adesso"
+            )
+    return differenze
+
+
 # --------------------------------------------------------------------------- #
 # Dataset
 # --------------------------------------------------------------------------- #

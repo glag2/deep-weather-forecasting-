@@ -26,6 +26,7 @@ from dwf.data.dataset import (
     WeatherWindowDataset,
     WindowBatchSampler,
     build_reader,
+    data_fingerprint,
     sample_starts,
     split_baselines,
 )
@@ -252,6 +253,9 @@ def train_fold(
     migliore = float("inf")
     epoca_migliore = -1
     checkpoint = destinazione
+    # Calcolata una volta sola: descrive i dati di questa corsa, che non cambiano
+    # mentre la corsa e' in atto.
+    impronta_dati = data_fingerprint(config, fold)
 
     if verbose:
         print(
@@ -310,6 +314,7 @@ def train_fold(
                     "val_loss": perdita_val,
                     "channels": input_layout.describe(),
                     "outputs": output_layout.describe(),
+                    "data": impronta_dati,
                 },
             )
 

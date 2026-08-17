@@ -294,6 +294,24 @@ def coerenza_artefatti(config: Config, fold: int) -> list[str]:
                 f"{len(storia)}"
             )
 
+    # Ingerire altri mesi sposta i confini fra addestramento, validazione e test senza
+    # che nulla smetta di funzionare: il modello si carica, la valutazione gira, e
+    # gira su finestre che prima stavano dall'altra parte del confine.
+    from dwf.data.dataset import confronta_impronte, data_fingerprint
+
+    # Se il catalogo non esiste non c'e' nulla da confrontare, e la sua assenza la
+    # segnala gia' la pagina dei dati: ripeterla qui aggiungerebbe solo rumore.
+    catalogo_presente = all(
+        (config.tables_dir / f"{nome}.parquet").exists() for nome in ("slots", "folds")
+    )
+    if catalogo_presente:
+        try:
+            problemi.extend(
+                confronta_impronte(metadati.get("data"), data_fingerprint(config, fold))
+            )
+        except Exception as errore:
+            problemi.append(f"Impronta dei dati non verificabile: {errore}")
+
     return problemi
 
 
