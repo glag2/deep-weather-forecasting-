@@ -33,6 +33,7 @@ from dwf.data.features import (
     build_input_tensor,
     to_working_units,
 )
+from dwf.slots import diurnal_reference_index
 from dwf.tables import FOLDS, read_table
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
@@ -41,6 +42,8 @@ if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
 # Chiavi dei tensori restituiti, cosi' che loss e valutazione non usino stringhe libere.
 KEY_FEATURES = "features"
 KEY_SLOT = "start_slot"
+# Prefisso delle chiavi che portano il riferimento diurno usato per l'ancoraggio.
+KEY_BASELINE_PREFIX = "baseline_"
 
 
 class DatasetError(RuntimeError):
@@ -239,6 +242,55 @@ def build_targets(
     return uscite
 
 
+def diurnal_baselines(
+    config: Config, stats: NormStats, window: dict[str, np.ndarray]
+) -> dict[str, torch.Tensor]:
+    """Riferimento diurno normalizzato per ogni testa gaussiana, scadenza per scadenza.
+
+    E' l'osservazione piu' recente alla stessa ora del giorno del bersaglio: la rete vi
+    somma sopra la propria uscita e impara quindi soltanto lo scarto. Serve la sola
+    parte osservata della finestra, quindi la funzione va bene sia in addestramento sia
+    in inferenza, dove il futuro non esiste.
+    """
+    if not config.model.anchor_diurnal:
+        return {}
+    slot_al_giorno = config.time.slots_per_day
+    input_slots = config.windows.input_slots
+    indici = [
+        diurnal_reference_index(scadenza, input_slots, slot_al_giorno)
+        for scadenza in range(config.windows.output_slots)
+    ]
+    riferimenti: dict[str, torch.Tensor] = {}
+    for spec in target_specs(config):
+        if spec.head != "gaussian":
+            continue
+        if spec.name not in window:
+            raise DatasetError(f"Manca la variabile {spec.name!r} per l'ancoraggio")
+        valori = stats.normalize(spec.name, window[spec.name][indici])
+        riferimenti[spec.name] = torch.from_numpy(np.ascontiguousarray(valori))
+    return riferimenti
+
+
+def split_baselines(
+    batch: dict[str, torch.Tensor],
+) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    """Separa i bersagli dai riferimenti di ancoraggio dentro un batch.
+
+    I riferimenti viaggiano nel campione perche' dipendono dalla finestra, ma non sono
+    bersagli: passarli alla loss la farebbe lamentare di chiavi sconosciute.
+    """
+    bersagli: dict[str, torch.Tensor] = {}
+    riferimenti: dict[str, torch.Tensor] = {}
+    for chiave, valore in batch.items():
+        if chiave in (KEY_FEATURES, KEY_SLOT):
+            continue
+        if chiave.startswith(KEY_BASELINE_PREFIX):
+            riferimenti[chiave[len(KEY_BASELINE_PREFIX) :]] = valore
+        else:
+            bersagli[chiave] = valore
+    return bersagli, riferimenti
+
+
 def _reference_threshold(specs: Sequence[TargetSpec], reference: str) -> float:
     for spec in specs:
         if spec.name == reference and spec.threshold is not None:
@@ -300,6 +352,7 @@ class WeatherWindowDataset(Dataset):
         self.input_slots = config.windows.input_slots
         self.output_slots = config.windows.output_slots
         self.slot_hours = tuple(config.time.slot_hours)
+        self.anchor_diurnal = config.model.anchor_diurnal
         self._rng = np.random.default_rng(seed)
 
         altezza, larghezza = reader.shape
@@ -354,7 +407,15 @@ class WeatherWindowDataset(Dataset):
             KEY_SLOT: torch.tensor(inizio, dtype=torch.int32),
         }
         campione.update(build_targets(self.specs, uscita, self.stats))
+        campione.update(self._diurnal_baselines(ritagliata))
         return campione
+
+    def _diurnal_baselines(self, window: dict[str, np.ndarray]) -> dict[str, torch.Tensor]:
+        """Riferimenti di ancoraggio del campione, col prefisso che li distingue dai target."""
+        return {
+            f"{KEY_BASELINE_PREFIX}{nome}": valore
+            for nome, valore in diurnal_baselines(self.config, self.stats, window).items()
+        }
 
     def _crop_origin(self) -> tuple[int, int]:
         if self.crop_size is None:
@@ -456,6 +517,7 @@ def build_reader(config: Config, layout: InputLayout) -> ZarrWindowReader:
 
 
 __all__ = [
+    "KEY_BASELINE_PREFIX",
     "KEY_FEATURES",
     "KEY_SLOT",
     "DatasetError",
@@ -465,6 +527,8 @@ __all__ = [
     "ZarrWindowReader",
     "build_reader",
     "build_targets",
+    "diurnal_baselines",
     "sample_starts",
+    "split_baselines",
     "target_specs",
 ]

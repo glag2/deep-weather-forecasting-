@@ -26,6 +26,7 @@ from dwf.predict import (
     predict_window,
     summarize,
 )
+from dwf.slots import diurnal_reference_index
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 
@@ -124,7 +125,14 @@ class ReteCostante(torch.nn.Module):
         return torch.full(self._forma, self._valore)
 
 
-def prevedi(config, layout, output_layout, valore=0.0, altezza=8, larghezza=10):
+def prevedi(config, layout, output_layout, valore=0.0, altezza=8, larghezza=10, *,
+            ancorata=False):
+    # Le prove sull'uscita usano di norma la rete non ancorata: con l'ancoraggio la
+    # previsione e' la somma fra uscita e riferimento, quindi non isolerebbe cio' che
+    # il singolo test vuole verificare. L'ancoraggio ha una prova sua.
+    config = config.model_copy(
+        update={"model": config.model.model_copy(update={"anchor_diurnal": ancorata})}
+    )
     lettore = LettoreFinto(layout, altezza, larghezza, tuple(config.time.slot_hours))
     rete = ReteCostante(output_layout, altezza, larghezza, valore)
     return predict_window(
@@ -383,3 +391,60 @@ def test_il_riepilogo_riporta_i_gradi_celsius(
     previsione = prevedi(config, layout, output_layout, valore=0.0)
     riepilogo = summarize(previsione)
     assert riepilogo.get_column("t2m_mean_celsius").to_numpy() == pytest.approx(5.0)
+
+# --------------------------------------------------------------------------- #
+# Ancoraggio al riferimento diurno
+# --------------------------------------------------------------------------- #
+
+
+class TestAncoraggioDiurno:
+    """Con l'ancoraggio la rete corregge un riferimento invece di prevedere da zero.
+
+    Il riferimento e' l'ultima osservazione alla stessa ora del giorno del bersaglio:
+    sui dati del progetto vale gia' un errore quadratico di 3,2 gradi contro i 4,7
+    della persistenza ingenua, quindi farlo ricostruire alla rete sarebbe uno spreco
+    di capacita'.
+    """
+
+    def test_una_rete_nulla_restituisce_il_riferimento(
+        self, config: Config, layout: InputLayout, output_layout: OutputLayout
+    ) -> None:
+        # Uscita nulla significa "nessuna correzione": deve uscire esattamente il
+        # riferimento, cioe' la persistenza diurna.
+        previsione = prevedi(config, layout, output_layout, valore=0.0, ancorata=True)
+        lettore = LettoreFinto(layout, 8, 10, tuple(config.time.slot_hours))
+        finestra = lettore.read_window(0, config.windows.input_slots)
+        atteso = np.stack(
+            [
+                finestra["t2m"][
+                    diurnal_reference_index(
+                        scadenza, config.windows.input_slots, config.time.slots_per_day
+                    )
+                ]
+                for scadenza in range(config.windows.output_slots)
+            ]
+        )
+        assert np.allclose(previsione.t2m_mean, atteso, atol=1e-4)
+
+    def test_l_uscita_della_rete_e_una_correzione_additiva(
+        self, config: Config, layout: InputLayout, output_layout: OutputLayout
+    ) -> None:
+        senza = prevedi(config, layout, output_layout, valore=0.0, ancorata=True)
+        con = prevedi(config, layout, output_layout, valore=1.0, ancorata=True)
+        # Uscita normalizzata pari a 1 con deviazione 2.0 sposta di 2 gradi.
+        assert np.allclose(con.t2m_mean - senza.t2m_mean, 2.0, atol=1e-4)
+
+    def test_senza_ancoraggio_il_riferimento_non_entra(
+        self, config: Config, layout: InputLayout, output_layout: OutputLayout
+    ) -> None:
+        previsione = prevedi(config, layout, output_layout, valore=0.0, ancorata=False)
+        assert np.allclose(previsione.t2m_mean, 5.0)
+
+    def test_l_incertezza_non_viene_traslata(
+        self, config: Config, layout: InputLayout, output_layout: OutputLayout
+    ) -> None:
+        # L'ancoraggio tocca la sola media: la deviazione descrive lo scarto e
+        # sommarle il riferimento non avrebbe alcun senso fisico.
+        senza = prevedi(config, layout, output_layout, valore=0.0, ancorata=False)
+        con = prevedi(config, layout, output_layout, valore=0.0, ancorata=True)
+        assert np.allclose(con.t2m_std, senza.t2m_std)

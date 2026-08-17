@@ -324,12 +324,18 @@ class SplitConfig(_Base):
 
 
 class ModelConfig(_Base):
-    """Dimensionamento della rete."""
+    """Dimensionamento della rete e parametrizzazione della sua uscita."""
 
     base_channels: Annotated[int, Field(ge=8)] = 48
     depth: Annotated[int, Field(ge=1, le=5)] = 3
     blocks_per_level: Annotated[int, Field(ge=1, le=4)] = 2
     dropout: Annotated[float, Field(ge=0.0, lt=1.0)] = 0.0
+    # Se attivo, le teste gaussiane prevedono lo scarto dall'ultima osservazione alla
+    # stessa ora del giorno invece del valore assoluto. Resta configurabile perche' il
+    # guadagno va misurato, non dato per scontato.
+    anchor_diurnal: bool = True
+    # Nome della variante di blocco da usare nel corpo della rete.
+    variant: str = "conv"
 
 
 class LossWeights(_Base):

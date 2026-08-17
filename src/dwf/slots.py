@@ -198,6 +198,31 @@ def slot_of_day(moment: datetime, slot_hours: Sequence[int]) -> int:
         ) from None
 
 
+def diurnal_reference_index(lead_index: int, input_slots: int, slots_per_day: int) -> int:
+    """Posizione, dentro la finestra, dell'ultima osservazione alla stessa ora del bersaglio.
+
+    Gli slot non sono equidistanti: con 06Z, 12Z e 18Z le distanze sono 6, 6 e 12 ore,
+    quindi solo un multiplo di ``slots_per_day`` corrisponde a un numero intero di
+    giorni. Tornando indietro di giorni interi a partire dal bersaglio si ottiene
+    un'osservazione alla sua stessa ora, che cade sempre nella parte gia' osservata
+    della finestra ed e' quindi disponibile al momento della previsione.
+
+    ``lead_index`` e' la scadenza contata da zero fra gli slot da prevedere.
+    """
+    if lead_index < 0:
+        raise ValueError(f"Scadenza negativa: {lead_index}")
+    if slots_per_day <= 0:
+        raise ValueError(f"slots_per_day deve essere positivo, ricevuto {slots_per_day}")
+    giorni_indietro = -(-(lead_index + 1) // slots_per_day)
+    indice = input_slots + lead_index - giorni_indietro * slots_per_day
+    if indice < 0:
+        raise ValueError(
+            f"La finestra osservata di {input_slots} slot non arriva abbastanza indietro "
+            f"per la scadenza {lead_index}: servirebbe l'indice {indice}"
+        )
+    return indice
+
+
 def expected_steps(slot_hours: Sequence[int]) -> list[int]:
     """Distanza in ore da ciascuno slot al successivo, chiudendo il giro sul giorno dopo."""
     ordered = sorted(slot_hours)

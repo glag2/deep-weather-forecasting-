@@ -22,7 +22,7 @@ import polars as pl
 import torch
 
 from dwf.calibration import ProbabilityCalibrator
-from dwf.data.dataset import ZarrWindowReader
+from dwf.data.dataset import ZarrWindowReader, diurnal_baselines
 from dwf.data.features import InputLayout, NormStats, build_input_tensor
 from dwf.models.heads import OutputLayout
 from dwf.tables import CALIBRATION, FORECAST, cast_to_schema, read_table
@@ -109,7 +109,13 @@ def predict_window(
         reference_time=riferimento,
         slot_hours=config.time.slot_hours,
     )
-    previsione = network(torch.from_numpy(caratteristiche).unsqueeze(0))
+    previsione = output_layout.apply_anchor(
+        network(torch.from_numpy(caratteristiche).unsqueeze(0)),
+        {
+            nome: valore.unsqueeze(0)
+            for nome, valore in diurnal_baselines(config, stats, finestra).items()
+        },
+    )
 
     media_norm = output_layout.select(previsione, "t2m", "mean")[0].numpy()
     log_var = output_layout.select(previsione, "t2m", "log_var")[0].numpy()

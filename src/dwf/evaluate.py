@@ -36,6 +36,7 @@ from dwf.data.dataset import (
     KEY_FEATURES,
     KEY_SLOT,
     WeatherWindowDataset,
+    split_baselines,
     target_specs,
 )
 from dwf.data.features import NormStats
@@ -285,7 +286,11 @@ def collect_predictions(
     for posizione in range(n_finestre):
         campione = dataset[posizione * dataset.crops_per_window]
         caratteristiche = campione[KEY_FEATURES].unsqueeze(0)
-        previsione = network(caratteristiche)
+        _, riferimenti = split_baselines(campione)
+        previsione = layout.apply_anchor(
+            network(caratteristiche),
+            {nome: valore.unsqueeze(0) for nome, valore in riferimenti.items()},
+        )
 
         media = layout.select(previsione, "t2m", "mean")[0].numpy()
         probabilita = torch.sigmoid(

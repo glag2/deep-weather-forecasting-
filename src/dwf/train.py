@@ -22,11 +22,11 @@ from torch.utils.data import DataLoader
 
 from dwf.data.dataset import (
     KEY_FEATURES,
-    KEY_SLOT,
     WeatherWindowDataset,
     WindowBatchSampler,
     build_reader,
     sample_starts,
+    split_baselines,
 )
 from dwf.data.features import InputLayout, NormStats, SlotReader, compute_norm_stats
 from dwf.models.heads import OutputLayout
@@ -143,6 +143,7 @@ def run_epoch(
     criterion: CompositeLoss,
     optimizer: torch.optim.Optimizer | None,
     grad_clip: float | None,
+    layout: OutputLayout,
 ) -> tuple[float, dict[str, float]]:
     """Una passata completa; se `optimizer` e' None esegue solo la valutazione."""
     allena = optimizer is not None
@@ -155,12 +156,8 @@ def run_epoch(
     with torch.set_grad_enabled(allena):
         for batch in loader:
             caratteristiche = batch[KEY_FEATURES]
-            bersagli = {
-                chiave: valore
-                for chiave, valore in batch.items()
-                if chiave not in (KEY_FEATURES, KEY_SLOT)
-            }
-            previsione = network(caratteristiche)
+            bersagli, riferimenti = split_baselines(batch)
+            previsione = layout.apply_anchor(network(caratteristiche), riferimenti)
             perdita = criterion(previsione, bersagli)
 
             if allena:
@@ -264,9 +261,12 @@ def train_fold(
     for epoca in range(n_epoche):
         avvio = time.perf_counter()
         perdita_train, componenti = run_epoch(
-            network, loader_train, criterion, optimizer, config.training.grad_clip_norm
+            network, loader_train, criterion, optimizer,
+            config.training.grad_clip_norm, output_layout,
         )
-        perdita_val, _ = run_epoch(network, loader_val, criterion, None, None)
+        perdita_val, _ = run_epoch(
+            network, loader_val, criterion, None, None, output_layout
+        )
         durata = time.perf_counter() - avvio
 
         cronologia.append(
