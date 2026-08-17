@@ -123,6 +123,25 @@ def expected_slot_times(
     return out
 
 
+def parse_month(value: str) -> tuple[int, int]:
+    """Interpreta una stringa `YYYY-MM` come coppia (anno, mese).
+
+    Usata dalle interfacce a riga di comando per delimitare le ondate di download e di
+    ingestione, dove un mese scritto male deve fallire subito e non a metà di un
+    trasferimento da ore.
+    """
+    parti = value.split("-")
+    if len(parti) != 2:
+        raise ValueError(f"Mese non valido: {value!r}, atteso YYYY-MM")
+    try:
+        year, month = int(parti[0]), int(parti[1])
+    except ValueError:
+        raise ValueError(f"Mese non valido: {value!r}, atteso YYYY-MM") from None
+    if not 1 <= month <= 12:
+        raise ValueError(f"Mese fuori intervallo: {value!r}")
+    return year, month
+
+
 def months_between(start: date, end: date) -> list[tuple[int, int]]:
     """Coppie (anno, mese) toccate dall'intervallo, estremi inclusi."""
     if start > end:

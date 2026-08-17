@@ -26,6 +26,7 @@ from dwf.slots import (
     max_rolling_folds,
     month_slot_times,
     months_between,
+    parse_month,
     required_hours,
     slot_of_day,
     slot_times_between,
@@ -434,3 +435,32 @@ def test_passo_non_positivo_e_rifiutato() -> None:
     args = {**ROLLING, "step_slots": 0}
     with pytest.raises(ValueError, match="step_slots deve essere positivo"):
         build_rolling_folds(2862, **args)
+
+
+# --------------------------------------------------------------------------- #
+# Interpretazione dei mesi da riga di comando
+# --------------------------------------------------------------------------- #
+
+
+def test_mese_valido_viene_interpretato() -> None:
+    assert parse_month("2025-01") == (2025, 1)
+    assert parse_month("2026-12") == (2026, 12)
+
+
+@pytest.mark.parametrize("valore", ["2025", "2025-01-01", "", "-"])
+def test_forma_sbagliata_e_rifiutata(valore: str) -> None:
+    with pytest.raises(ValueError, match="Mese non valido"):
+        parse_month(valore)
+
+
+@pytest.mark.parametrize("valore", ["duemila-01", "2025-gennaio"])
+def test_valori_non_numerici_sono_rifiutati(valore: str) -> None:
+    with pytest.raises(ValueError, match="Mese non valido"):
+        parse_month(valore)
+
+
+@pytest.mark.parametrize("valore", ["2025-00", "2025-13"])
+def test_mese_fuori_intervallo_e_rifiutato(valore: str) -> None:
+    """Un mese assurdo deve fallire subito, non a meta' di un download da ore."""
+    with pytest.raises(ValueError, match="fuori intervallo"):
+        parse_month(valore)
