@@ -28,6 +28,10 @@ def code(text: str) -> nbformat.NotebookNode:
 
 
 def notebook(cells: list[nbformat.NotebookNode]) -> nbformat.NotebookNode:
+    # `nbformat` assegna identificatori casuali: rigenerare un notebook invariato
+    # produrrebbe comunque un diff. Numerandoli, il diff mostra solo cio' che cambia.
+    for posizione, cella in enumerate(cells):
+        cella.id = f"cella-{posizione:02d}"
     documento = nbformat.v4.new_notebook(cells=cells)
     documento.metadata = {
         "kernelspec": {
