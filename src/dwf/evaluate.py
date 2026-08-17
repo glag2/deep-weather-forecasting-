@@ -24,6 +24,7 @@ import numpy as np
 import polars as pl
 import torch
 
+from dwf.calibration import ProbabilityCalibrator, calibration_error
 from dwf.data.dataset import (
     KEY_FEATURES,
     KEY_SLOT,
@@ -48,6 +49,12 @@ class EvaluationError(RuntimeError):
     """Errore nel calcolo delle metriche."""
 
 
+# Sopra questa quota di neve sul totale, la precipitazione si considera nevosa. Serve
+# una soglia perche' "nevica" e' un evento binario mentre il modello prevede una
+# frazione continua; una meta' e' la lettura naturale di "nevica invece di piovere".
+SNOW_FRACTION_THRESHOLD = 0.5
+
+
 @dataclass(frozen=True, slots=True)
 class Prediction:
     """Previsioni e osservazioni accumulate su uno split, in memoria compatta."""
@@ -58,6 +65,36 @@ class Prediction:
     tp_occurrence: np.ndarray
     month: np.ndarray
     lead: np.ndarray
+    snow_probability: np.ndarray | None = None
+    snow_occurrence: np.ndarray | None = None
+
+    def with_calibrated_tp(self, calibrator: ProbabilityCalibrator) -> Prediction:
+        """Copia con le probabilita' di pioggia corrette dalla mappa di calibrazione.
+
+        La probabilita' di neve viene riscalata in proporzione: e' il prodotto fra la
+        probabilita' che precipiti e la quota di neve, quindi correggere la prima
+        senza la seconda renderebbe le due incoerenti.
+        """
+        corretta = calibrator.apply(self.tp_probability)
+        neve = self.snow_probability
+        if neve is not None:
+            quota = np.divide(
+                neve,
+                self.tp_probability,
+                out=np.zeros_like(neve),
+                where=self.tp_probability > 1e-6,
+            )
+            neve = (corretta * quota).astype(np.float32)
+        return Prediction(
+            t2m_mean=self.t2m_mean,
+            t2m_target=self.t2m_target,
+            tp_probability=corretta,
+            tp_occurrence=self.tp_occurrence,
+            month=self.month,
+            lead=self.lead,
+            snow_probability=neve,
+            snow_occurrence=self.snow_occurrence,
+        )
 
 
 def climatology_from_slots(
@@ -95,6 +132,71 @@ def brier_skill_score(
     if not np.isfinite(riferimento) or riferimento <= 0.0:
         return float("nan")
     return 1.0 - brier_score(probability, outcome) / riferimento
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationScore:
+    """Qualita' di una decisione binaria presa da una probabilita'.
+
+    Il Brier misura la probabilita', ma chi legge una previsione prende una decisione:
+    esco senza ombrello oppure no. Queste sono le metriche di quella decisione.
+    """
+
+    threshold: float
+    precision: float
+    recall: float
+    f1: float
+    accuracy: float
+    n_positive_predicted: int
+    n_positive_observed: int
+
+
+def classification_score(
+    probability: np.ndarray, outcome: np.ndarray, *, threshold: float = 0.5
+) -> ClassificationScore:
+    """Precisione, richiamo e F1 della decisione "evento si" sopra la soglia."""
+    previsto = probability >= threshold
+    osservato = outcome > 0.5
+
+    veri_positivi = int(np.count_nonzero(previsto & osservato))
+    falsi_positivi = int(np.count_nonzero(previsto & ~osservato))
+    falsi_negativi = int(np.count_nonzero(~previsto & osservato))
+
+    precisione = veri_positivi / (veri_positivi + falsi_positivi) if previsto.any() else 0.0
+    richiamo = veri_positivi / (veri_positivi + falsi_negativi) if osservato.any() else float("nan")
+    if precisione + richiamo > 0 and np.isfinite(richiamo):
+        f1 = 2 * precisione * richiamo / (precisione + richiamo)
+    else:
+        f1 = 0.0 if np.isfinite(richiamo) else float("nan")
+
+    return ClassificationScore(
+        threshold=float(threshold),
+        precision=float(precisione),
+        recall=float(richiamo),
+        f1=float(f1),
+        accuracy=float(np.mean(previsto == osservato)) if probability.size else float("nan"),
+        n_positive_predicted=int(np.count_nonzero(previsto)),
+        n_positive_observed=int(np.count_nonzero(osservato)),
+    )
+
+
+def best_f1_threshold(
+    probability: np.ndarray, outcome: np.ndarray, *, n_steps: int = 99
+) -> tuple[float, float]:
+    """Soglia che massimizza l'F1, e il valore raggiunto.
+
+    La soglia 0,5 e' una convenzione, non un ottimo: su un evento con frequenza di base
+    diversa da un mezzo la decisione migliore cade altrove. Va scelta sulla validazione
+    e poi applicata al test, non ottimizzata sul test.
+    """
+    if probability.size == 0:
+        return 0.5, float("nan")
+    migliore, punteggio = 0.5, -1.0
+    for soglia in np.linspace(0.01, 0.99, n_steps):
+        corrente = classification_score(probability, outcome, threshold=float(soglia)).f1
+        if np.isfinite(corrente) and corrente > punteggio:
+            migliore, punteggio = float(soglia), float(corrente)
+    return migliore, punteggio
 
 
 def reliability_table(
@@ -163,8 +265,12 @@ def collect_predictions(
     t2m_vero: list[np.ndarray] = []
     tp_prob: list[np.ndarray] = []
     tp_occ: list[np.ndarray] = []
+    neve_prob: list[np.ndarray] = []
+    neve_occ: list[np.ndarray] = []
     mesi: list[np.ndarray] = []
     scadenze: list[np.ndarray] = []
+
+    ha_neve = "sf" in layout.variables and "fraction_logit" in layout.components_of("sf")
 
     n_finestre = (
         len(dataset.starts) if max_windows is None else min(max_windows, len(dataset.starts))
@@ -182,6 +288,13 @@ def collect_predictions(
         bersaglio_t2m = campione["target_t2m"].numpy()
         bersaglio_tp = campione["target_tp_occurrence"].numpy()
 
+        if ha_neve:
+            quota = torch.sigmoid(layout.select(previsione, "sf", "fraction_logit"))[0].numpy()
+            # Nevica se precipita **e** la precipitazione e' prevalentemente neve.
+            probabilita_neve = probabilita * quota
+            quota_vera = campione["target_sf_fraction"].numpy()
+            bersaglio_neve = bersaglio_tp * (quota_vera >= SNOW_FRACTION_THRESHOLD)
+
         n_slot, altezza, larghezza = media.shape
         piatti = altezza * larghezza
         scelti = generatore.choice(piatti, size=min(subsample, piatti), replace=False)
@@ -193,6 +306,9 @@ def collect_predictions(
             t2m_vero.append(bersaglio_t2m[slot].reshape(-1)[scelti])
             tp_prob.append(probabilita[slot].reshape(-1)[scelti])
             tp_occ.append(bersaglio_tp[slot].reshape(-1)[scelti])
+            if ha_neve:
+                neve_prob.append(probabilita_neve[slot].reshape(-1)[scelti])
+                neve_occ.append(bersaglio_neve[slot].reshape(-1)[scelti])
             mesi.append(np.full(scelti.size, istante.month, dtype=np.int16))
             scadenze.append(np.full(scelti.size, slot, dtype=np.int16))
 
@@ -206,6 +322,8 @@ def collect_predictions(
         tp_occurrence=np.concatenate(tp_occ),
         month=np.concatenate(mesi),
         lead=np.concatenate(scadenze),
+        snow_probability=np.concatenate(neve_prob) if neve_prob else None,
+        snow_occurrence=np.concatenate(neve_occ) if neve_occ else None,
     )
 
 
@@ -216,8 +334,14 @@ def metrics_table(
     model: str,
     split: str,
     fold: int,
+    rain_threshold: float = 0.5,
+    snow_threshold: float = 0.5,
 ) -> pl.DataFrame:
-    """Metriche per scadenza e per mese, in unita' fisiche dove ha senso."""
+    """Metriche per scadenza e per mese, in unita' fisiche dove ha senso.
+
+    Le soglie di decisione sono parametri e non costanti: quella ottimale dipende dalla
+    frequenza di base dell'evento e va scelta sulla validazione, mai sul test.
+    """
     righe: list[dict[str, object]] = []
 
     # La climatologia della pioggia e' la frequenza di base osservata nello split, per
@@ -294,6 +418,57 @@ def metrics_table(
             }
         )
 
+        def registra_classificazione(
+            variabile: str,
+            probabilita_evento: np.ndarray,
+            osservato: np.ndarray,
+            soglia: float,
+        ) -> None:
+            punteggio = classification_score(probabilita_evento, osservato, threshold=soglia)
+            valori = {
+                "precision": punteggio.precision,
+                "recall": punteggio.recall,
+                "f1": punteggio.f1,
+                "accuracy": punteggio.accuracy,
+                "decision_threshold": punteggio.threshold,
+                "calibration_error": calibration_error(probabilita_evento, osservato),
+            }
+            for nome, valore in valori.items():
+                righe.append(
+                    {
+                        "model": model, "split": split, "fold": fold, "variable": variabile,
+                        "lead_slot": -1 if scadenza is None else scadenza,
+                        "month": -1 if mese is None else mese,
+                        "metric": nome, "value": float(valore),
+                        "n_values": int(selezione.sum()),
+                    }
+                )
+
+        registra_classificazione("tp", probabilita, occorrenza, rain_threshold)
+
+        if prediction.snow_probability is not None and prediction.snow_occurrence is not None:
+            neve_prob = prediction.snow_probability[selezione]
+            neve_occ = prediction.snow_occurrence[selezione]
+            righe.append(
+                {
+                    "model": model, "split": split, "fold": fold, "variable": "sf",
+                    "lead_slot": -1 if scadenza is None else scadenza,
+                    "month": -1 if mese is None else mese,
+                    "metric": "brier", "value": brier_score(neve_prob, neve_occ),
+                    "n_values": int(selezione.sum()),
+                }
+            )
+            righe.append(
+                {
+                    "model": model, "split": split, "fold": fold, "variable": "sf",
+                    "lead_slot": -1 if scadenza is None else scadenza,
+                    "month": -1 if mese is None else mese,
+                    "metric": "base_rate", "value": float(neve_occ.mean()),
+                    "n_values": int(selezione.sum()),
+                }
+            )
+            registra_classificazione("sf", neve_prob, neve_occ, snow_threshold)
+
     aggiungi(None, None, np.ones_like(prediction.lead, dtype=bool))
     for scadenza in np.unique(prediction.lead):
         aggiungi(int(scadenza), None, prediction.lead == scadenza)
@@ -316,6 +491,8 @@ def persistence_baseline(
     t2m_vero: list[np.ndarray] = []
     tp_prob: list[np.ndarray] = []
     tp_occ: list[np.ndarray] = []
+    neve_prob: list[np.ndarray] = []
+    neve_occ: list[np.ndarray] = []
     mesi: list[np.ndarray] = []
     scadenze: list[np.ndarray] = []
 
@@ -323,18 +500,33 @@ def persistence_baseline(
         len(dataset.starts) if max_windows is None else min(max_windows, len(dataset.starts))
     )
     generatore = np.random.default_rng(dataset.config.training.seed)
+    soglia = next(spec.threshold for spec in specs if spec.name == "tp")
+    ha_neve = "sf" in nomi
+
+    def occorrenza_neve(pioggia: np.ndarray, neve: np.ndarray) -> np.ndarray:
+        """Nevica dove precipita in modo misurabile e la neve e' la parte prevalente."""
+        precipita = pioggia > soglia
+        quota = np.zeros_like(pioggia, dtype=np.float32)
+        np.divide(neve, pioggia, out=quota, where=precipita)
+        return (precipita & (quota >= SNOW_FRACTION_THRESHOLD)).astype(np.float32)
 
     for posizione in range(n_finestre):
         inizio = dataset.starts[posizione]
         totale = dataset.input_slots + dataset.output_slots
         finestra = dataset.reader.read_window(inizio, totale)
 
-        ultimo_t2m = dataset.stats.normalize("t2m", finestra["t2m"][dataset.input_slots - 1])
-        soglia = next(spec.threshold for spec in specs if spec.name == "tp")
-        ultimo_tp = (finestra["tp"][dataset.input_slots - 1] > soglia).astype(np.float32)
+        ultimo = dataset.input_slots - 1
+        ultimo_t2m = dataset.stats.normalize("t2m", finestra["t2m"][ultimo])
+        ultimo_tp = (finestra["tp"][ultimo] > soglia).astype(np.float32)
 
         bersaglio_t2m = dataset.stats.normalize("t2m", finestra["t2m"][dataset.input_slots :])
         bersaglio_tp = (finestra["tp"][dataset.input_slots :] > soglia).astype(np.float32)
+
+        if ha_neve:
+            ultima_neve = occorrenza_neve(finestra["tp"][ultimo], finestra["sf"][ultimo])
+            bersaglio_neve = occorrenza_neve(
+                finestra["tp"][dataset.input_slots :], finestra["sf"][dataset.input_slots :]
+            )
 
         piatti = ultimo_t2m.size
         scelti = generatore.choice(piatti, size=min(64, piatti), replace=False)
@@ -345,6 +537,9 @@ def persistence_baseline(
             t2m_vero.append(bersaglio_t2m[slot].reshape(-1)[scelti])
             tp_prob.append(ultimo_tp.reshape(-1)[scelti])
             tp_occ.append(bersaglio_tp[slot].reshape(-1)[scelti])
+            if ha_neve:
+                neve_prob.append(ultima_neve.reshape(-1)[scelti])
+                neve_occ.append(bersaglio_neve[slot].reshape(-1)[scelti])
             mesi.append(np.full(scelti.size, istante.month, dtype=np.int16))
             scadenze.append(np.full(scelti.size, slot, dtype=np.int16))
 
@@ -355,14 +550,20 @@ def persistence_baseline(
         tp_occurrence=np.concatenate(tp_occ),
         month=np.concatenate(mesi),
         lead=np.concatenate(scadenze),
+        snow_probability=np.concatenate(neve_prob) if neve_prob else None,
+        snow_occurrence=np.concatenate(neve_occ) if neve_occ else None,
     )
 
 
 __all__ = [
+    "SNOW_FRACTION_THRESHOLD",
+    "ClassificationScore",
     "EvaluationError",
     "Prediction",
+    "best_f1_threshold",
     "brier_score",
     "brier_skill_score",
+    "classification_score",
     "climatology_from_slots",
     "collect_predictions",
     "metrics_table",
