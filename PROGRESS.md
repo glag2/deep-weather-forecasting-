@@ -5,9 +5,10 @@ prese, verifiche effettivamente eseguite e problemi aperti.
 
 - **Branch di lavoro**: `feature/era5-forecasting-pipeline`
 - **Ultimo aggiornamento**: 2026-08-17
-- **Fase corrente**: costruzione della pipeline dati (nessun dato reale ancora scaricato)
-- **Stato verifiche**: 275 test superati in 9 s, `ruff` senza rilievi
+- **Fase corrente**: pipeline completa end-to-end (dati -> addestramento -> previsione -> notebook)
+- **Stato verifiche**: 458 test superati, `ruff` senza rilievi
 - **Accesso CDS**: verificato end-to-end (vedi 5.1)
+- **Dati presenti**: 7 mesi ingeriti (2024-01, 2025-01..06), 453 slot utilizzabili; download dei restanti in corso
 
 ### Ambiente misurato
 
@@ -121,15 +122,33 @@ src/dwf/
   tables.py               layer Polars/Parquet con schemi verificati
   data/download.py        richieste CDS per mese e famiglia di variabili
   data/ingest.py          GRIB -> Zarr + catalogo Parquet
-  models/                 rete convoluzionale e teste probabilistiche
+  data/features.py        layout dei canali di ingresso (245) e normalizzazione
+  data/dataset.py         lettura a finestre, ritagli, costruzione dei bersagli
+  data/freshness.py       frontiera di pubblicazione ERA5 e stato dei mesi
+  data/refresh.py         aggiornamento incrementale (scarica, ingerisce, ricataloga)
+  models/                 rete convoluzionale, teste probabilistiche, perdite
+  calibration.py          regressione isotonica delle probabilita' previste
+  train.py                addestramento di un fold, checkpoint, storia
+  evaluate.py             metriche, persistenza di riferimento, F1, affidabilita'
+  predict.py              previsione sul dominio intero in unita' fisiche
 scripts/
   check_cds_access.py     diagnosi di accesso al CDS
   benchmark_model.py      costo del modello su CPU
   download_era5.py        scarica i GRIB, con ripresa e manifest
   ingest_era5.py          ingerisce i mesi disponibili
-tests/                    305 test
+  refresh_data.py         allinea i dati al pubblicato (`--check` per la sola diagnosi)
+  train_model.py          addestra uno o piu' fold
+  evaluate_model.py       valuta un fold contro la persistenza
+  predict_forecast.py     previsione a 3 giorni sull'ultima finestra
+  build_notebooks.py      genera i due notebook con nbformat
+notebooks/
+  01_training.ipynb       fold, layout, addestramento, curve, affidabilita'
+  02_inference.ipynb      aggiornamento dati, previsione, mappe, verifica
+tests/                    458 test
 datasets/                 (ignorato da git) raw GRIB, Zarr, tables, artifacts
 INGESTION.md              spiegazione dettagliata della pipeline dati
+Dockerfile                immagine CPU con eccodes e uv
+docker-compose.yml        servizi `dwf` e `jupyter`
 ```
 
 ## 4. Cronologia
@@ -183,11 +202,31 @@ Completato:
 
 - `data/ingest.py` + `scripts/ingest_era5.py`: GRIB -> Zarr, catalogo Parquet, tabella
   dei fold. Documentato in dettaglio in `INGESTION.md`.
-
-Da fare: `features.py`, `dataset.py`.
+- `data/freshness.py` + `data/refresh.py` + `scripts/refresh_data.py`: aggiornamento
+  incrementale con gestione del mese in corso (vedi 4.3).
 
 Nota sui test: il backoff di produzione e' 30 s e i test sui riprovi lo azzerano via
 configurazione. Lasciandolo attivo la suite passava da 9 a 338 secondi.
+
+### Fase 3 - Modello e valutazione (completata)
+
+- `data/features.py`: **`InputLayout` e' la definizione autorevole dei canali**.
+  L'ordine dei canali e' un contratto silenzioso: scambiarne due non fa fallire nulla e
+  produce solo associazioni sbagliate, quindi esiste in un solo posto e tutto il resto
+  lo legge da li' (`benchmark_model.py` compreso, dove prima l'aritmetica era duplicata).
+- `data/dataset.py`: `ZarrWindowReader` con cache LRU, ritagli, bersagli.
+- `models/losses.py`: NLL gaussiana, hurdle, frazione; verificate contro la forma
+  chiusa e con gradienti finiti.
+- `train.py`, `evaluate.py`, `predict.py` e i rispettivi script.
+
+### Fase 4 - Confezionamento (completata)
+
+- `Dockerfile` e `docker-compose.yml`. **La build non e' stata verificata**: nessun
+  demone Docker attivo su questa macchina. Dichiarato, non presunto.
+- `scripts/build_notebooks.py` genera i due notebook con `nbformat`. Scriverli a mano
+  in JSON e' fragile e produce diff illeggibili; gli identificatori di cella sono
+  numerati perche' quelli casuali di `nbformat` sporcavano il diff a ogni rigenerazione.
+  Il notebook di inferenza e' stato **eseguito per intero** per verificare che giri.
 
 ### 4.1 Fatti verificati sull'ingestione
 
@@ -226,6 +265,92 @@ rapporto `sf/tp` massimo **1,043**, e dove `tp = 0` il valore di `sf` non supera
 Decisione: l'ingestione **non corregge** il dato, per restare fedele alla sorgente. La
 correzione appartiene alla costruzione del target, dove il rapporto va limitato a [0, 1]
 e definito solo sopra la soglia di 0,1 mm. La testa `fraction_of` resta appropriata.
+
+### 4.3 Il mese in corso e' sempre parziale
+
+ERA5 e' una rianalisi, non una previsione: esce con alcuni giorni di ritardo, quindi in
+qualunque momento l'ultimo mese disponibile si ferma a meta'. Un file che copre mezzo
+mese **non e' corrotto**, e riscaricarlo a ogni esecuzione sprecherebbe ore.
+
+La frontiera non viene assunta da una latenza fissa ma **letta dal catalogo STAC del
+CDS** (`extent.temporal.interval`), che il 2026-08-17 dichiarava `2026-08-11`: latenza
+reale di 6 giorni. Se il catalogo non risponde si ricade su una stima prudente di 8
+giorni, **dichiarata come stima** invece che spacciata per certa: chiedere un giorno non
+ancora pubblicato fa rifiutare l'intera richiesta, mentre chiederne uno in meno costa
+solo un aggiornamento rimandato.
+
+Il manifest registra ora **quanti giorni copre ogni file**. Un mese viene riscaricato
+solo quando i giorni pubblicati superano quelli gia' presenti; i mesi interamente futuri
+non vengono mai richiesti. Un manifest scritto prima di questa colonna resta leggibile e
+i suoi mesi sono considerati completi, per non innescare un riscaricamento generale.
+
+### 4.4 Difetti trovati misurando, non leggendo
+
+| Difetto | Come e' emerso | Correzione |
+|---|---|---|
+| `log1p` inefficace su `tp` | I valori normalizzati restavano ~0,0007: in metri la trasformazione non fa nulla | `transform_scale=1000.0` (metri -> millimetri); intervallo dei canali da [-11,3; 18,1] a [-4,5; 6,5] |
+| 0,42 s per campione gia' in cache | `cProfile`: `valid_time` costava 5,81 s su 5,88 s, riletto via dask a ogni chiamata | Istanti caricati una volta all'apertura: **0,424 -> 0,013 s, 32 volte piu' veloce** |
+| Ipotesi di re-chunking spaziale | Misurata invece che adottata: `(8,96,96)` costa 510 ms e `(8,64,64)` 884 ms contro i 207 ms attuali | Ipotesi **respinta**; evitata una re-ingestione inutile |
+| Identificatori di cella casuali | Rigenerare un notebook invariato produceva comunque un diff | Numerazione deterministica, verificata per hash |
+
+### 4.5 Calibrazione delle probabilita'
+
+La rete addestrata con la log-verosimiglianza **ordina** bene ma sbaglia la **scala**:
+diceva 0,15 dove la frequenza osservata era 0,01. Poiche' l'affidabilita' e' fra le
+grandezze richieste, la scala va corretta.
+
+Correzione adottata: **regressione isotonica** (pool adjacent violators, ~30 righe,
+nessuna dipendenza in piu'). Monotona, quindi non inverte mai l'ordinamento appreso
+dalla rete, e non parametrica, perche' la forma della distorsione non e' nota a priori.
+
+**Il protocollo conta piu' dell'algoritmo**: la mappa e la soglia di decisione si
+stimano sulla **validazione** e si misurano sul **test**. Farlo sullo stesso split
+darebbe un guadagno apparente che sparirebbe al primo dato nuovo.
+
+Effetto misurato sul test del fold 0 (199 finestre mai viste):
+
+| | grezze | calibrate |
+|---|---|---|
+| Errore di calibrazione | 0,0702 | **0,0392** |
+| Brier | 0,1841 | **0,1785** |
+
+Un difetto del **mio metodo di valutazione**, trovato e corretto: avevo ottimizzato la
+soglia di decisione della pioggia ma lasciato quella della neve a 0,5. La probabilita'
+di neve e' un prodotto di due probabilita', quindi vive su una scala molto piu' bassa:
+con 0,5 il modello non prevedeva quasi mai neve e l'F1 risultava 0,194. Scegliendo la
+soglia sulla validazione come per la pioggia, l'F1 sale a **0,553**.
+
+### 4.6 Qualita' misurata sul test del fold 0
+
+Modello addestrato 15 epoche, migliore all'epoca 13 (validazione 2,063 -> 0,915).
+**Attenzione al contesto**: con i mesi finora ingeriti il fold 0 ha solo 64 finestre di
+addestramento, cioe' in pratica il solo gennaio 2024. I numeri sono quindi un limite
+inferiore, non il potenziale del modello.
+
+| Grandezza | Modello | Persistenza |
+|---|---|---|
+| Temperatura, RMSE | **4,08 K** | 4,64 K |
+| Temperatura, MAE | **2,91 K** | 3,08 K |
+| Pioggia, F1 | **0,667** | 0,659 |
+| Pioggia, Brier Skill Score | **+0,229** | -0,079 |
+| Pioggia, errore di calibrazione | **0,039** | 0,250 |
+| Neve, F1 | 0,553 | **0,579** |
+| Neve, Brier | **0,072** | 0,093 |
+
+Il dato che conta non e' la media ma **l'andamento con la scadenza**:
+
+| Scadenza | 0 (6 h) | 4 (42 h) | 8 (72 h) |
+|---|---|---|---|
+| F1 pioggia, modello | 0,687 | 0,649 | **0,661** |
+| F1 pioggia, persistenza | 0,786 | 0,646 | **0,598** |
+| F1 neve, modello | 0,557 | 0,559 | **0,548** |
+| F1 neve, persistenza | 0,740 | 0,558 | **0,499** |
+| BSS pioggia, modello | 0,274 | 0,207 | **0,209** |
+| BSS pioggia, persistenza | 0,321 | -0,120 | **-0,274** |
+
+La persistenza vince nelle prime ore e **degrada**; il modello e' quasi **piatto**. Il
+sorpasso avviene intorno alle 24-36 ore, ed e' esattamente il comportamento che ci si
+attende da un modello che ha imparato dinamica invece di copiare lo stato iniziale.
 
 ## 5. Verifiche eseguite
 
