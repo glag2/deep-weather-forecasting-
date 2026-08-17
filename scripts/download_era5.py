@@ -104,6 +104,10 @@ def write_manifest(outcomes: list[DownloadOutcome], config: Config) -> Path | No
 
     Il download procede a ondate, quindi sovrascrivere il file perderebbe l'esito di
     quelle gia' concluse. Per ogni file si tiene la registrazione piu' recente.
+
+    Viene richiamata dopo ogni singolo task, non a fine corsa: una sessione dura ore e
+    se venisse interrotta a meta' il manifest resterebbe fermo allo stato precedente,
+    facendo credere al refresh che nulla sia stato scaricato.
     """
     records = outcomes_to_records(outcomes)
     if not records:
@@ -170,6 +174,9 @@ def main() -> None:
             f"[{indice}/{len(tasks)}] {task.label:28s} {esito.status:11s} "
             f"{dettaglio} ({esito.seconds:.0f} s)"
         )
+        # Registrato subito: una sessione dura ore e un'interruzione a meta' non deve
+        # lasciare il manifest indietro rispetto ai file effettivamente presenti.
+        write_manifest([esito], config)
         if esito.status == "failed" and args.stop_on_error:
             print("\ninterrotto al primo errore, come richiesto.")
             break
