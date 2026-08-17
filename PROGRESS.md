@@ -6,7 +6,8 @@ prese, verifiche effettivamente eseguite e problemi aperti.
 - **Branch di lavoro**: `feature/era5-forecasting-pipeline`
 - **Ultimo aggiornamento**: 2026-08-17
 - **Fase corrente**: costruzione della pipeline dati (nessun dato reale ancora scaricato)
-- **Stato verifiche**: 184 test superati, `ruff` senza rilievi
+- **Stato verifiche**: 275 test superati in 9 s, `ruff` senza rilievi
+- **Accesso CDS**: verificato end-to-end (vedi 5.1)
 
 ### Ambiente misurato
 
@@ -37,7 +38,8 @@ non come dichiarazione qualitativa).
 | Area | lat 10-75 N, lon 40 W-60 E, 0.25 gradi, **261 x 401** | Ricavata dagli output salvati in `EDA.ipynb`, coincide con `numberOfPoints: 104661` |
 | Risoluzione | nativa 0.25 gradi, `coarsen` configurabile | Richiesta esplicita dell'utente; su CPU e' sostenibile solo con training a crop |
 | Fonte dati | ERA5 via CDS API (GRIB) | Continuita' con `Data/era5-request.py` |
-| Periodo | 2024-08 .. 2026-07 (24 mesi, 2190 slot) | 2 anni per validare, poi estendibile |
+| Periodo | **2024-01-01 .. 2026-08-11** (32 mesi, 2862 slot) | Richiesta dell'utente; `end` non e' scelto a mano ma e' `end_datetime` dei metadati della collection CDS |
+| Validazione | **finestra mobile (rolling origin), 6 fold** | Uno split contiguo lascia al test solo la coda estiva; vedi 2.1 |
 | Slot giornalieri | 06, 12, 18 UTC | Corrispondono a mattina / mezzogiorno / sera |
 | Cumulate | finestra di 8 h centrata sullo slot | Copre 20 h su 24 con 4 conteggi ridondanti; nessuna finestra sconfina dal giorno, quindi l'ingestione resta mensile |
 | Storage numerico | Zarr + dask, **solo layer di ingestione** | Accesso casuale a finestre spaziotemporali senza caricare tutto in RAM |
@@ -45,6 +47,42 @@ non come dichiarazione qualitativa).
 | Config | pydantic con validazione runtime | Impedisce che download, training e inferenza divergano sui parametri condivisi |
 | Training | CPU, patch-based su crop 96 x 96 | Nessuna GPU disponibile; la rete e' completamente convoluzionale e in inferenza si applica a 261 x 401 |
 | Packaging | `uv` + `pyproject.toml` + Docker | Richiesta dell'utente |
+
+### 2.1 Perche' la validazione e' a finestra mobile
+
+I dati contengono **tre inverni** (gen-mar 2024, dic 2024-mar 2025, gen-mar 2026). Il
+problema non era la mancanza di stagione fredda ma la **geometria dello split**: tre
+blocchi contigui assorbono tutti gli inverni in train e validation e lasciano al test
+la sola coda del periodo, misurata come aprile-agosto 2026, cioe' **0 slot in mesi
+nevosi**. La testa neve non sarebbe stata valutabile e la temperatura sarebbe stata
+misurata su un solo regime.
+
+Adottata la **rolling origin validation**: l'origine avanza di `step_days` a ogni
+fold, quindi i blocchi di test scorrono nel tempo, e dentro ogni fold l'ordine
+train -> val -> test resta rispettato (nessuna valutazione su dati precedenti
+all'addestramento). Con `initial_train_days=330`, `val_days=60`, `test_days=90`,
+`step_days=90` entrano **6 fold** e i test coprono **tutti i 12 mesi**, mesi nevosi
+inclusi. Verificato in `tests/test_config.py`.
+
+Costo: il training va ripetuto per ogni fold. Con `expanding: true` il train cresce e
+usa tutta la storia disponibile; `mode: chronological` resta selezionabile da config
+per una valutazione a blocco unico.
+
+### 2.2 Strategia per la neve
+
+Tre scelte, tutte pensate per il fatto che la neve e' un evento raro e stagionale:
+
+1. **`snow_depth` come predittore** (non target): rappresenta lo stato del manto
+   nevoso, che condiziona la temperatura tramite albedo e fusione e determina la
+   persistenza della neve al suolo. Segnale utile anche fuori dai mesi nevosi in
+   quota.
+2. **Testa `sf` come `fraction_of tp`**: "nevica invece di piovere". Combinata con la
+   probabilita' di precipitazione della testa `hurdle` da' "neve si/no" come
+   probabilita', non come soglia arbitraria.
+3. **Metriche come Brier Skill Score contro la climatologia**, con la frequenza di
+   base riportata accanto e stratificazione per mese. Un Brier grezzo su un evento
+   raro premia il modello che prevede sempre "no neve": senza confronto con la
+   climatologia il numero non e' interpretabile.
 
 ### Perche' non Polars per il tensore
 
@@ -79,10 +117,14 @@ src/dwf/
   variables.py            registro variabili ERA5 (nome CDS <-> short name GRIB)
   slots.py                algebra slot temporali, finestre accumulo, split
   config.py               configurazione validata con pydantic
+  credentials.py          credenziali CDS, senza mai esporne il valore
   tables.py               layer Polars/Parquet con schemi verificati
-tests/
-  test_slots.py           test dell'algebra temporale
-  test_environment.py     smoke test delle capacita' runtime (serve anche per Docker)
+  data/download.py        richieste CDS per mese e famiglia di variabili
+  models/                 rete convoluzionale e teste probabilistiche
+scripts/
+  check_cds_access.py     diagnosi di accesso al CDS
+  benchmark_model.py      costo del modello su CPU
+tests/                    275 test
 data/                     (ignorato da git) raw GRIB, Zarr, tables, artifacts
 ```
 
@@ -124,7 +166,21 @@ Difetti individuati in `EDA.ipynb`:
 
 ### Fase 2 - Ingestione dati (in corso)
 
-Da fare: `download.py`, `ingest.py` (GRIB -> Zarr), `features.py`, `dataset.py`.
+Completato:
+
+- `credentials.py`: risoluzione delle credenziali senza mai esporne il valore,
+  lettura in `utf-8-sig` per il BOM di Windows.
+- `scripts/check_cds_access.py`: diagnosi separata di credenziali, token, licenze e
+  disponibilita' temporale. Accesso verificato, vedi 5.1.
+- `tables.py`: schemi Parquet dichiarati e verificati a runtime.
+- `data/download.py`: una richiesta per mese e famiglia di variabili, ritaglio
+  all'area, ripresa e scrittura atomica. Collaudato con un client finto: nessun test
+  contatta il CDS.
+
+Da fare: `ingest.py` (GRIB -> Zarr), `features.py`, `dataset.py`.
+
+Nota sui test: il backoff di produzione e' 30 s e i test sui riprovi lo azzerano via
+configurazione. Lasciandolo attivo la suite passava da 9 a 338 secondi.
 
 ## 5. Verifiche eseguite
 
@@ -135,15 +191,46 @@ Da fare: `download.py`, `ingest.py` (GRIB -> Zarr), `features.py`, `dataset.py`.
 | Copertura giornaliera | `accumulation_coverage([6,12,18], 8)` | 20 ore su 24, 4 conteggi ridondanti (come dichiarato) |
 | Vincolo mezzanotte | slot notturni con finestra 8 h | superato: solleva `ValueError` |
 | Rilevamento buchi | serie completa e serie bucata | superato |
-| Split su 2 anni | 2190 slot | train 1504 campioni, val 299, test 240; nessuna finestra attraversa i confini |
+| Periodo a granularita' di giorno | mesi parziali agli estremi | superato: 2026-08 troncato a 11 giorni, nessuna richiesta oltre il limite pubblicato |
+| Fold a finestra mobile | copertura stagionale dei test | superato: 6 fold, tutti i 12 mesi coperti, mesi nevosi inclusi |
 | Codifica temporale | ciclicita' giornaliera e stagionale | superato |
 | Ambiente runtime | `tests/test_environment.py` | superato: backend `cfgrib` registrato in xarray, binari eccodes raggiungibili, torch senza CUDA, round-trip Parquet |
 | Configurazione | `tests/test_config.py` | superato: 30 casi, incluse tutte le incoerenze semantiche |
 | Layout canali e rete | `tests/test_models.py` | superato: 45 casi |
 | Rete su dominio reale | forward 261 x 401 (non divisibile per 8) | superato: forma preservata grazie al padding riflesso |
 | Costo su CPU | `scripts/benchmark_model.py` | misurato, vedi sotto |
+| Credenziali | `tests/test_credentials.py` | superato: 18 casi, incluso il BOM e la non esposizione del valore |
+| Layer tabellare | `tests/test_tables.py` | superato: 20 casi, incluso un Parquet con schema vecchio |
+| Downloader | `tests/test_download.py` | superato: 27 casi con client finto (ripresa, riprovi, scrittura atomica) |
 | Lint | `ruff check src tests scripts` | nessun rilievo |
-| Suite completa | `pytest tests` | 184 superati |
+| Suite completa | `pytest tests` | 275 superati in 9 s |
+
+### 5.1 Accesso CDS verificato
+
+`scripts/check_cds_access.py`, eseguito il 2026-08-17:
+
+| Controllo | Esito |
+|---|---|
+| Credenziali lette da `.env` | url e key presenti |
+| Classe client effettiva | `ecmwf.datastores.legacy_client.LegacyClient` (dispatch confermato) |
+| Autenticazione | OK |
+| `licence-to-use-copernicus-products`, `terms-of-use-cds` | gia' accettate |
+| Estensione dataset | **1940-01-01 .. 2026-08-11** (latenza 6 giorni) |
+| Download reale su 2024-01-01 | OK, 116 byte |
+| Download reale su 2026-08-11 | OK, 116 byte |
+
+Due difetti del mio script corretti durante la verifica:
+
+1. Il primo tentativo passava `dataset=` a `get_licences`, che accetta **solo**
+   `scope`. Il fallback elencava tutte le 48 licenze del portale e le segnalava come
+   da accettare: `--accept-licences` ne avrebbe accettate 44 **estranee** a nome
+   dell'utente. Rimossa l'accettazione in blocco; ora l'unico test della licenza e' il
+   download reale e si accetta solo una licenza indicata esplicitamente.
+2. La disponibilita' veniva sondata provando date a caso. Il campo `end_datetime` dei
+   metadati della collection e' la fonte autorevole ed evita richieste inutili.
+
+Nota: la collection espone `licences: null`, quindi **l'API non permette di sapere
+quali licenze richiede un singolo dataset**.
 
 ### Costo misurato su CPU (non stimato)
 
@@ -164,22 +251,18 @@ verificata.
 
 ## 6. Problemi aperti
 
-### 6.1 Test set monostagionale (da decidere)
+### 6.1 Test set monostagionale (RISOLTO con la finestra mobile)
 
-Con 24 mesi e split contiguo 70/15/15, il blocco di test copre **solo maggio-luglio
-2026**. In quel periodo la neve sull'area e' praticamente assente, quindi **le
-metriche sulla neve non sarebbero misurabili** e quelle su temperatura e
-precipitazione descriverebbero solo il regime estivo.
+Misurato sul periodo 2024-01-01 .. 2026-08-11 con split contiguo:
 
-| Split | Periodo | Slot | Campioni |
+| Split | Periodo | Slot | Mesi nevosi |
 |---|---|---|---|
-| train | 2024-08-01 .. 2025-12-24 | 1533 | 1504 |
-| val | 2026-01-04 .. 2026-04-23 | 328 | 299 |
-| test | 2026-05-03 .. 2026-07-31 | 269 | 240 |
+| train | 2024-01-01 .. 2025-10-29 | 2003 | 32% |
+| val | 2025-11-08 .. 2026-03-31 | 429 | 84% |
+| test | 2026-04-10 .. 2026-08-11 | 370 | **0%** |
 
-Opzioni: estendere il periodo a piu' anni, oppure aggiungere una strategia di split
-a blocchi mensili distribuiti sulle stagioni (mantiene la copertura stagionale senza
-introdurre leakage, a costo di piu' giunzioni). **Decisione non ancora presa.**
+Risolto passando alla rolling origin validation (vedi 2.1): 6 fold i cui blocchi di
+test coprono tutti i 12 mesi. Copertura verificata da test automatico, non a occhio.
 
 ### 6.2 Latenza ERA5
 
@@ -188,11 +271,15 @@ previsione per giorni **gia' trascorsi** (hindcast verificabile, utile per valid
 ma non una previsione operativa). Per il tempo reale servirebbe una seconda sorgente
 (`data.ecmwf.int`). Il downloader e' progettato con sorgente sostituibile.
 
-### 6.3 Credenziali CDS assenti
+### 6.3 Credenziali CDS (risolto, con un'avvertenza)
 
-Ne' `~/.cdsapirc` ne' variabili d'ambiente sono presenti: **nessun dato reale e'
-stato scaricato**. Procedura per ottenerle in `README.md`. Finche' non ci sono, la
-pipeline e' validata solo su dati sintetici con struttura identica a quella reale.
+Credenziali presenti in `.env` (ignorato da git) e accesso verificato end-to-end, vedi
+5.1. Restano due note operative:
+
+- il token va **ruotato** quando il download massivo e' concluso, perche' e' transitato
+  in un canale non controllato;
+- il download reale non e' ancora stato lanciato: la pipeline oltre `download.py` e'
+  ancora validata solo su dati sintetici.
 
 ### 6.4 Fattibilita' del training a 0.25 gradi su CPU (RISOLTO)
 
