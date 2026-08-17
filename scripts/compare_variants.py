@@ -116,10 +116,15 @@ def configura(base: Config, prova: Prova, args: argparse.Namespace) -> Config:
             "samples_per_epoch": args.samples,
             # Seme identico per tutte: le finestre estratte e l'inizializzazione
             # partono dallo stesso stato, quindi la differenza misurata e' la variante.
-            "seed": base.training.seed,
+            # Ripetere la stessa prova cambiando solo questo valore misura invece la
+            # dispersione fra ripetizioni, cioe' quanto scarto e' rumore.
+            "seed": args.seed if args.seed is not None else base.training.seed,
         }
     )
-    percorsi = base.paths.model_copy(update={"artifacts_subdir": f"bench/{prova.nome}"})
+    suffisso = "" if args.seed is None else f"_seed{args.seed}"
+    percorsi = base.paths.model_copy(
+        update={"artifacts_subdir": f"bench/{prova.nome}{suffisso}"}
+    )
     return base.model_copy(
         update={"model": modello, "training": allenamento, "paths": percorsi}
     )
@@ -242,6 +247,12 @@ def main() -> None:
     parser.add_argument("--samples", type=int, default=192)
     parser.add_argument("--eval-windows", type=int, default=40)
     parser.add_argument("--only", nargs="*", help="Esegue solo le prove indicate.")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Sovrascrive il seme: ripetere una prova con semi diversi misura il rumore.",
+    )
     parser.add_argument("--list", action="store_true", help="Elenca le prove e termina.")
     parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "VARIANTS.md")
     args = parser.parse_args()

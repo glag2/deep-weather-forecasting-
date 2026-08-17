@@ -100,6 +100,15 @@ model:
   depth: 3
   blocks_per_level: 2
   dropout: 0.0
+  # Blocco elementare della rete: conv | attention | fourier | recurrent | hybrid.
+  # Le cinque varianti sono confrontate in VARIANTS.md a parita' assoluta di protocollo.
+  # La differenza fra loro (0,024 degC) e' risultata piu' piccola del rumore fra semi
+  # (0,059 degC), quindi si sceglie la piu' economica, non la prima in classifica.
+  variant: conv
+  # La rete prevede lo scarto rispetto all'osservazione piu' recente alla stessa ora del
+  # bersaglio, non il valore assoluto. E' l'unica scelta che nel banco esce dal rumore:
+  # 6,613 degC senza, 3,625 con.
+  anchor_diurnal: true
 
 training:
   seed: 1234
