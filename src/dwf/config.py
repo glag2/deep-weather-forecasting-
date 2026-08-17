@@ -399,6 +399,12 @@ class PathsConfig(_Base):
     # il risultato del lavoro, non dati grezzi rigenerabili con un nuovo download.
     models_dir: str = "models"
 
+    # Ramo sotto `models_dir` in cui isolare i checkpoint di una singola esecuzione.
+    # Serve ai banchi di prova: senza di esso ogni prova scriverebbe e rileggerebbe la
+    # stessa cartella, e due esecuzioni contemporanee si sovrascriverebbero il
+    # checkpoint fra addestramento e valutazione.
+    models_subdir: str = ""
+
     # Slot per blocco Zarr. Compromesso misurabile: blocchi grandi riducono il numero
     # di letture ma per un crop piccolo trasferiscono dati inutili, blocchi piccoli
     # fanno il contrario. Lo spazio resta non suddiviso perche' l'inferenza legge
@@ -564,7 +570,16 @@ class Config(_Base):
 
     def fold_dir(self, fold: int) -> Path:
         """Directory del modello di un fold: unica fonte del percorso per tutto il codice."""
-        return self.models_dir / f"fold_{fold:02d}"
+        radice = self.models_dir
+        if self.paths.models_subdir:
+            radice = (radice / self.paths.models_subdir).resolve()
+            # Il ramo arriva da riga di comando: verificare il percorso risolto e' l'unico
+            # controllo che regge, perche' `..` e i collegamenti sono gia' stati espansi.
+            if radice != self.models_dir and self.models_dir not in radice.parents:
+                raise ValueError(
+                    f"models_subdir esce dalla cartella dei modelli: {self.paths.models_subdir!r}"
+                )
+        return radice / f"fold_{fold:02d}"
 
     # --- costruzione ---
 
