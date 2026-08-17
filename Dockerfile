@@ -35,6 +35,10 @@ RUN uv sync --locked --no-install-project --extra notebooks
 COPY src/ ./src/
 COPY configs/ ./configs/
 COPY scripts/ ./scripts/
+# `pyproject.toml` dichiara readme e licenza: senza questi file l'installazione del
+# progetto fallisce nel backend di build, non a runtime, quindi l'errore arriva a
+# immagine quasi completata.
+COPY README.md LICENSE ./
 RUN uv sync --locked --extra notebooks
 
 # I dati stanno su un volume: sono decine di gigabyte e non appartengono all'immagine.

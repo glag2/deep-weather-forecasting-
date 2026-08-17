@@ -12,6 +12,8 @@ services:
     volumes:
       - ./datasets:/app/datasets
       - ./configs:/app/configs
+      # Senza questo montaggio i checkpoint prodotti in container sparirebbero con lui.
+      - ./models:/app/models
     env_file:
       # Le credenziali CDS restano fuori dall'immagine e fuori dal repository.
       - .env
@@ -31,6 +33,7 @@ services:
     volumes:
       - ./datasets:/app/datasets
       - ./configs:/app/configs
+      - ./models:/app/models
       - ./notebooks:/app/notebooks
     env_file:
       - .env
