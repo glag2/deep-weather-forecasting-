@@ -21,6 +21,7 @@ from dwf.data.dataset import build_reader
 from dwf.predict import (
     forecast_to_table,
     latest_usable_start,
+    load_calibrator,
     predict_window,
     summarize,
 )
@@ -46,6 +47,10 @@ def main() -> None:
         "--stride", type=int, default=4,
         help="Sottocampionamento della griglia nella tabella salvata.",
     )
+    parser.add_argument(
+        "--no-calibration", action="store_true",
+        help="Usa le probabilita' grezze della rete, senza correggerne la scala.",
+    )
     args = parser.parse_args()
 
     config = Config.load(args.config, project_root=PROJECT_ROOT)
@@ -56,10 +61,16 @@ def main() -> None:
     utilizzabili = catalogo.sort("slot_index").get_column("usable").to_numpy()
     inizio = args.start if args.start is not None else latest_usable_start(config, utilizzabili)
 
+    calibratore = None if args.no_calibration else load_calibrator(config, args.fold)
     previsione = predict_window(
-        config, network, input_layout, output_layout, stats, reader, inizio
+        config, network, input_layout, output_layout, stats, reader, inizio,
+        calibrator=calibratore,
     )
 
+    if calibratore is None:
+        print("probabilita' non calibrate: eseguire prima scripts/evaluate_model.py")
+    else:
+        print(f"probabilita' calibrate su {calibratore.n_samples:,} casi di validazione")
     print(f"fold {args.fold}, finestra che inizia allo slot {inizio}")
     print(f"ultimo istante osservato: {previsione.init_time}")
     print(f"dominio: {previsione.t2m_mean.shape[1]} x {previsione.t2m_mean.shape[2]}")

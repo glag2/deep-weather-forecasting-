@@ -21,10 +21,11 @@ import numpy as np
 import polars as pl
 import torch
 
+from dwf.calibration import ProbabilityCalibrator
 from dwf.data.dataset import ZarrWindowReader
 from dwf.data.features import InputLayout, NormStats, build_input_tensor
 from dwf.models.heads import OutputLayout
-from dwf.tables import FORECAST, cast_to_schema
+from dwf.tables import CALIBRATION, FORECAST, cast_to_schema, read_table
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
     from dwf.config import Config
@@ -70,6 +71,18 @@ def latest_usable_start(config: Config, usable: np.ndarray) -> int:
     )
 
 
+def load_calibrator(config: Config, fold: int) -> ProbabilityCalibrator | None:
+    """Mappa di calibrazione del fold, se e' stata stimata.
+
+    Assente non e' un errore: un modello appena addestrato non ha ancora una
+    calibrazione, e le probabilita' grezze restano utilizzabili, solo meno fedeli.
+    """
+    percorso = config.artifacts_dir / f"fold_{fold:02d}" / CALIBRATION.filename
+    if not percorso.exists():
+        return None
+    return ProbabilityCalibrator.from_table(read_table(CALIBRATION, percorso.parent))
+
+
 @torch.no_grad()
 def predict_window(
     config: Config,
@@ -79,6 +92,7 @@ def predict_window(
     stats: NormStats,
     reader: ZarrWindowReader,
     start: int,
+    calibrator: ProbabilityCalibrator | None = None,
 ) -> Forecast:
     """Esegue la rete su una finestra e converte l'uscita in unita' fisiche."""
     network.eval()
@@ -107,6 +121,10 @@ def predict_window(
     probabilita = torch.sigmoid(
         output_layout.select(previsione, "tp", "occurrence_logit")
     )[0].numpy()
+    if calibrator is not None:
+        # La rete ordina bene ma sbaglia la scala: senza questa correzione un "40 % di
+        # pioggia" non corrisponde a piovere nel 40 % dei casi in cui viene dichiarato.
+        probabilita = calibrator.apply(probabilita)
     quantita = stats.denormalize(
         "tp", output_layout.select(previsione, "tp", "amount")[0].numpy()
     )
@@ -206,6 +224,7 @@ __all__ = [
     "PredictionError",
     "forecast_to_table",
     "latest_usable_start",
+    "load_calibrator",
     "predict_window",
     "summarize",
 ]
