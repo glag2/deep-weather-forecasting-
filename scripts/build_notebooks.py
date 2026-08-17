@@ -273,27 +273,50 @@ del modello, ed e' anche cio' che permette di verificarne l'onesta'.
         markdown("""
 ## 1. I dati sono aggiornati?
 
-Se mancano mesi, la finestra piu' recente utilizzabile e' vecchia. Le celle seguenti
-mostrano che cosa c'e' e che cosa manca; il download e l'ingestione si lanciano dai
-rispettivi script.
+Prima di prevedere bisogna sapere fino a quando arrivano i dati. La frontiera non si
+indovina: il catalogo del CDS la dichiara, e la si legge da li'. Se il catalogo non
+risponde si ricade su una stima prudente, dichiarata come tale.
+
+**Il mese in corso e' sempre parziale.** ERA5 e' una rianalisi, non una previsione:
+esce con alcuni giorni di ritardo, quindi l'ultimo mese si ferma a meta'. Un file che
+copre mezzo mese non e' rotto, e non va riscaricato a ogni esecuzione: va riscaricato
+solo quando ERA5 ha pubblicato altri giorni. Il confronto fra i giorni gia' presenti e
+quelli ora disponibili e' esattamente cio' che decide.
 """),
         code("""
-from dwf.data.ingest import available_months
+from dwf.data.freshness import query_availability, summarize_freshness
 
-attesi = config.time.months()
-presenti = available_months(config)
-mancanti = [mese for mese in attesi if mese not in presenti]
+disponibilita = query_availability()
+print(disponibilita.describe())
 
-print(f"mesi attesi   : {len(attesi)}")
-print(f"GRIB presenti : {len(presenti)}")
-if mancanti:
-    print(f"mancanti      : {len(mancanti)}, dal {mancanti[0][0]}-{mancanti[0][1]:02d} "
-          f"al {mancanti[-1][0]}-{mancanti[-1][1]:02d}")
-    print("\\nPer scaricarli:")
-    print(f"  python scripts/download_era5.py --from-month {mancanti[0][0]}-{mancanti[0][1]:02d}")
-    print("  python scripts/ingest_era5.py")
-else:
-    print("nessun mese mancante")
+stato = summarize_freshness(config, disponibilita)
+da_aggiornare = stato.filter("needs_download")
+print(f"\\nmesi attesi: {stato.height} | da aggiornare: {da_aggiornare.height} | "
+      f"parziali: {int(stato.get_column('partial').sum())}")
+da_aggiornare if da_aggiornare.height else stato.tail(5)
+"""),
+        markdown("""
+### Aggiornamento
+
+La cella seguente scarica e ingerisce cio' che manca. E' l'operazione lunga del
+notebook: circa nove minuti e 390 MB per mese, quindi conviene tenere `MAX_MESI` basso
+la prima volta e rilanciare, invece di avviare ore di scaricamento alla cieca.
+
+Serve la credenziale CDS nel file `.env`. Se manca, la cella si ferma con un messaggio
+esplicito e il resto del notebook funziona comunque sui dati gia' presenti.
+"""),
+        code("""
+from dwf.data.refresh import refresh_data
+
+AGGIORNA = False   # portare a True per scaricare davvero
+MAX_MESI = 1       # quanti mesi aggiornare per esecuzione
+
+rapporto = refresh_data(
+    config,
+    availability=disponibilita,
+    download=AGGIORNA,
+    max_months=MAX_MESI,
+)
 """),
         code("""
 import numpy as np
