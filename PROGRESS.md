@@ -1,501 +1,435 @@
-# Stato dello sviluppo
+# Deep Weather Forecasting - documento di subentro
 
-Documento di tracciamento, aggiornato a ogni fase completata. Registra decisioni
-prese, verifiche effettivamente eseguite e problemi aperti.
+Questo documento e' scritto perche' una persona che non ha mai visto il progetto possa
+riprenderlo in mano. Non racconta solo **cosa** c'e', ma **perche'** e' cosi', quali
+alternative sono state scartate e con quale misura, e dove sono i limiti veri.
 
-- **Branch di lavoro**: `feature/era5-forecasting-pipeline`
-- **Ultimo aggiornamento**: 2026-08-17
-- **Fase corrente**: pipeline completa end-to-end (dati -> addestramento -> previsione -> notebook)
-- **Stato verifiche**: 458 test superati, `ruff` senza rilievi
-- **Accesso CDS**: verificato end-to-end (vedi 5.1)
-- **Dati presenti**: 7 mesi ingeriti (2024-01, 2025-01..06), 453 slot utilizzabili; download dei restanti in corso
-
-### Ambiente misurato
-
-| | |
-|---|---|
-| CPU | 4 core fisici / 8 logici (torch usa 4 thread) |
-| RAM | 15,8 GB |
-| GPU | assente |
-| Python | 3.12.10, venv gestito da `uv` 0.12.5 |
-| torch | 2.13.0**+cpu** (nessun binario CUDA) |
+Regola di lettura adottata in tutto il progetto: **i dati sono veri**. ERA5 e' una
+rianalisi prodotta assimilando osservazioni in un modello fisico. Davanti a un numero
+sorprendente, la prima ipotesi da verificare e' un errore di chi analizza. Questo
+documento riporta i casi in cui quell'ipotesi si e' rivelata giusta, perche' sono la
+parte piu' istruttiva del lavoro.
 
 ---
 
-## 1. Obiettivo
+## 1. Che cosa fa
 
-Prevedere i **3 giorni successivi** (slot mattina / mezzogiorno / sera) sull'intera
-area euro-atlantica, a partire dai **7 giorni precedenti** di rianalisi ERA5, con un
-modello convoluzionale **scritto da zero** (nessun modello preaddestrato).
+Previsione a **tre giorni** su griglia, addestrata e ottenuta **in locale su CPU**.
 
-Variabili di interesse finale: **temperatura**, **precipitazione**, **neve** e
-**affidabilita'** della previsione (quest'ultima come uscita probabilistica calibrata,
-non come dichiarazione qualitativa).
+- **Ingresso**: 7 giorni di storico ERA5, cioe' 21 istanti (06, 12, 18 UTC).
+- **Uscita**: 9 istanti futuri (3 giorni x 3 ore del giorno), prodotti **tutti in una
+  sola passata**, non in modo autoregressivo.
+- **Dominio**: euro-atlantico, 261 x 401 celle a 0,25 gradi (75 N .. 10 N, 40 W .. 60 E).
+- **Grandezze previste**: temperatura a 2 m in **gradi Celsius**, precipitazione
+  (probabilita' e quantita'), neve (frazione della precipitazione) e **incertezza
+  calibrata** su ciascuna.
+- **Consegna**: tabelle Parquet, due notebook e un **report PDF** con mappe.
 
-## 2. Decisioni prese
+Il progetto ha un luogo di interesse dichiarato, **Vigo di Cadore**, che compare nella
+pesatura della perdita, nell'analisi dei dati e nel report.
 
-| Tema | Decisione | Motivazione |
-|---|---|---|
-| Area | lat 10-75 N, lon 40 W-60 E, 0.25 gradi, **261 x 401** | Ricavata dagli output salvati in `EDA.ipynb`, coincide con `numberOfPoints: 104661` |
-| Risoluzione | nativa 0.25 gradi, `coarsen` configurabile | Richiesta esplicita dell'utente; su CPU e' sostenibile solo con training a crop |
-| Fonte dati | ERA5 via CDS API (GRIB) | Continuita' con `Data/era5-request.py` |
-| Periodo | **2024-01-01 .. 2026-08-11** (32 mesi, 2862 slot) | Richiesta dell'utente; `end` non e' scelto a mano ma e' `end_datetime` dei metadati della collection CDS |
-| Validazione | **finestra mobile (rolling origin), 6 fold** | Uno split contiguo lascia al test solo la coda estiva; vedi 2.1 |
-| Slot giornalieri | 06, 12, 18 UTC | Corrispondono a mattina / mezzogiorno / sera |
-| Cumulate | finestra di 8 h centrata sullo slot | Copre 20 h su 24 con 4 conteggi ridondanti; nessuna finestra sconfina dal giorno, quindi l'ingestione resta mensile |
-| Storage numerico | Zarr + dask, **solo layer di ingestione** | Accesso casuale a finestre spaziotemporali senza caricare tutto in RAM |
-| Storage tabellare | **Polars / Parquet**, layer dati principale | Richiesta dell'utente; `slots.parquet` e' il registro autorevole degli slot |
-| Config | pydantic con validazione runtime | Impedisce che download, training e inferenza divergano sui parametri condivisi |
-| Training | CPU, patch-based su crop 96 x 96 | Nessuna GPU disponibile; la rete e' completamente convoluzionale e in inferenza si applica a 261 x 401 |
-| Packaging | `uv` + `pyproject.toml` + Docker | Richiesta dell'utente |
+### Stato
 
-### 2.1 Perche' la validazione e' a finestra mobile
+| | |
+|---|---|
+| Test | **673**, tutti verdi, anche dentro il container |
+| Lint | `ruff` pulito su `src`, `tests`, `scripts` |
+| Commit sul ramo | 46, nessuno spinto |
+| Dati scaricati | 21 mesi (2024-01, 2025-01 .. 2026-08); il 2024 residuo e' in scaricamento |
+| Dati ingeriti | 16 mesi, 1458 istanti, zero valori mancanti |
+| Docker | immagine costruita e **verificata eseguendo la suite al suo interno** |
 
-I dati contengono **tre inverni** (gen-mar 2024, dic 2024-mar 2025, gen-mar 2026). Il
-problema non era la mancanza di stagione fredda ma la **geometria dello split**: tre
-blocchi contigui assorbono tutti gli inverni in train e validation e lasciano al test
-la sola coda del periodo, misurata come aprile-agosto 2026, cioe' **0 slot in mesi
-nevosi**. La testa neve non sarebbe stata valutabile e la temperatura sarebbe stata
-misurata su un solo regime.
+---
 
-Adottata la **rolling origin validation**: l'origine avanza di `step_days` a ogni
-fold, quindi i blocchi di test scorrono nel tempo, e dentro ogni fold l'ordine
-train -> val -> test resta rispettato (nessuna valutazione su dati precedenti
-all'addestramento). Con `initial_train_days=330`, `val_days=60`, `test_days=90`,
-`step_days=90` entrano **6 fold** e i test coprono **tutti i 12 mesi**, mesi nevosi
-inclusi. Verificato in `tests/test_config.py`.
+## 2. Come si esegue
 
-Costo: il training va ripetuto per ogni fold. Con `expanding: true` il train cresce e
-usa tutta la storia disponibile; `mode: chronological` resta selezionabile da config
-per una valutazione a blocco unico.
+### In locale
 
-### 2.2 Strategia per la neve
+```bash
+uv sync --extra notebooks          # ambiente riproducibile dal lockfile
+uv run python scripts/check_cds_access.py
+uv run python scripts/download_era5.py --dry-run
+uv run python scripts/download_era5.py
+uv run python scripts/ingest_era5.py
+uv run python scripts/analyze_data.py      # -> DATA_ANALYSIS.md
+uv run python scripts/compare_variants.py  # -> VARIANTS.md
+uv run python scripts/train_model.py --fold 0
+uv run python scripts/evaluate_model.py --fold 0 --split test
+uv run python scripts/predict_forecast.py --fold 0
+uv run python scripts/report_forecast.py --fold 0   # -> PDF
+```
 
-Tre scelte, tutte pensate per il fatto che la neve e' un evento raro e stagionale:
+Le credenziali CDS stanno in `.env`, che non e' tracciato. Non vanno mai incollate in
+chat ne' committate: una chiave transitata in un canale non cifrato va considerata
+compromessa e ruotata.
 
-1. **`snow_depth` come predittore** (non target): rappresenta lo stato del manto
-   nevoso, che condiziona la temperatura tramite albedo e fusione e determina la
-   persistenza della neve al suolo. Segnale utile anche fuori dai mesi nevosi in
-   quota.
-2. **Testa `sf` come `fraction_of tp`**: "nevica invece di piovere". Combinata con la
-   probabilita' di precipitazione della testa `hurdle` da' "neve si/no" come
-   probabilita', non come soglia arbitraria.
-3. **Metriche come Brier Skill Score contro la climatologia**, con la frequenza di
-   base riportata accanto e stratificazione per mese. Un Brier grezzo su un evento
-   raro premia il modello che prevede sempre "no neve": senza confronto con la
-   climatologia il numero non e' interpretabile.
+### In container
 
-### Perche' non Polars per il tensore
+```bash
+docker compose build
+docker compose run --rm dwf python scripts/ingest_era5.py --list
+docker compose up jupyter        # notebook su http://localhost:8888
+```
 
-L'utente preferiva Polars come storage principale. Misurato il costo: il tensore
-`(tempo, lat, lon, variabile)` in forma tabellare sono **229 milioni di righe**. Il
-problema non e' la dimensione (~8-10 GB in Parquet) ma il pattern di accesso del
-training: ogni campione richiede un crop 96 x 96 su 30 slot consecutivi, che in
-Parquet costa una scansione di 3,1 M righe per tenerne 276k (**~11x di
-amplificazione**), piu' un `pivot` e un `reshape` per campione, con la correttezza
-dipendente dall'ordinamento delle righe. E' lo stesso approccio di
-`ERA5_grib_to_csv` in `EDA.ipynb`, che non e' mai arrivato a termine.
+Dati, configurazioni, modelli e notebook sono **volumi**, non contenuti
+dell'immagine: pesano decine di gigabyte e devono sopravvivere a una ricostruzione.
 
-Compromesso adottato: **Zarr per i tensori, Polars per tutto il resto** (catalogo
-slot, QC, schema canali, statistiche di normalizzazione, metriche, calibrazione,
-previsione finale).
+**Avvertenza verificata**: Debian bookworm fornisce ecCodes 2.28 mentre `cfgrib`
+raccomanda 2.42. La suite passa comunque nel container, ma l'ingestione dei GRIB
+conviene eseguirla sull'host.
 
-### Teste probabilistiche
+---
 
-| Target | Testa | Perche' |
-|---|---|---|
-| `t2m` | `gaussian` (media + log-varianza) | Variabile continua e quasi simmetrica; la varianza prevista da' l'incertezza |
-| `tp` | `hurdle` (P(> 0.1 mm) + quantita' condizionata) | La precipitazione ha una massa di probabilita' esattamente in zero, che una gaussiana non puo' rappresentare |
-| `sf` | `fraction_of` rispetto a `tp` | Modella "nevica invece di piovere" senza prevedere due volte la quantita' totale |
-
-## 3. Struttura del repository
+## 3. Mappa del repository
 
 ```
-pyproject.toml            pacchetto uv, indice torch CPU forzato
-uv.lock                   144 pacchetti risolti
-configs/default.yaml       configurazione di riferimento
 src/dwf/
-  variables.py            registro variabili ERA5 (nome CDS <-> short name GRIB)
-  slots.py                algebra slot temporali, finestre accumulo, split
-  config.py               configurazione validata con pydantic
-  credentials.py          credenziali CDS, senza mai esporne il valore
-  tables.py               layer Polars/Parquet con schemi verificati
-  data/download.py        richieste CDS per mese e famiglia di variabili
-  data/ingest.py          GRIB -> Zarr + catalogo Parquet
-  data/features.py        layout dei canali di ingresso (245) e normalizzazione
-  data/dataset.py         lettura a finestre, ritagli, costruzione dei bersagli
-  data/freshness.py       frontiera di pubblicazione ERA5 e stato dei mesi
-  data/refresh.py         aggiornamento incrementale (scarica, ingerisce, ricataloga)
-  models/                 rete convoluzionale, teste probabilistiche, perdite
-  calibration.py          regressione isotonica delle probabilita' previste
-  train.py                addestramento di un fold, checkpoint, storia
-  evaluate.py             metriche, persistenza di riferimento, F1, affidabilita'
-  predict.py              previsione sul dominio intero in unita' fisiche
-scripts/
-  check_cds_access.py     diagnosi di accesso al CDS
-  benchmark_model.py      costo del modello su CPU
-  download_era5.py        scarica i GRIB, con ripresa e manifest
-  ingest_era5.py          ingerisce i mesi disponibili
-  refresh_data.py         allinea i dati al pubblicato (`--check` per la sola diagnosi)
-  train_model.py          addestra uno o piu' fold
-  evaluate_model.py       valuta un fold contro la persistenza
-  predict_forecast.py     previsione a 3 giorni sull'ultima finestra
-  build_notebooks.py      genera i due notebook con nbformat
-notebooks/
-  01_training.ipynb       fold, layout, addestramento, curve, affidabilita'
-  02_inference.ipynb      aggiornamento dati, previsione, mappe, verifica
-tests/                    458 test
-datasets/                 (ignorato da git) raw GRIB, Zarr, tables, artifacts
-INGESTION.md              spiegazione dettagliata della pipeline dati
-Dockerfile                immagine CPU con eccodes e uv
-docker-compose.yml        servizi `dwf` e `jupyter`
+  config.py          Configurazione validata con pydantic; unico punto di verita'
+  variables.py       Anagrafica delle 24 variabili: unita', trasformazioni, offset
+  slots.py           Aritmetica degli istanti; qui vive diurnal_reference_index
+  tables.py          Schemi Parquet dichiarati e verificati
+  credentials.py     Lettura delle credenziali CDS, mai stampate
+  solar.py           Geometria solare (Spencer 1971): 3 canali
+  thermo.py          Termodinamica dell'aria umida: 4 canali
+  weighting.py       Pesi spaziali della perdita (area + fuoco locale)
+  persistence.py     Salvataggio dei modelli senza pickle
+  calibration.py     Calibrazione isotonica delle probabilita'
+  train.py evaluate.py predict.py report.py
+  data/
+    download.py ingest.py features.py dataset.py freshness.py refresh.py
+  models/
+    heads.py blocks.py network.py losses.py
+    variants/        conv, attention, fourier, recurrent, hybrid
+scripts/             12 punti d'ingresso da riga di comando
+tests/               20 file, 673 test
 ```
 
-## 4. Cronologia
-
-### Fase 0 - Analisi del repository esistente (completata)
-
-Stato trovato: 8 file tracciati, nessun modello, nessun test, nessun packaging.
-
-Difetti individuati in `EDA.ipynb`:
-
-1. `ERA5_grib_to_csv` itera in Python su `time x lat x lon x variable` con
-   `pd.concat` dentro il loop: per un mese globale a 0.25 gradi sono ~7,7 x 10^8
-   righe, irrealizzabile per ordini di grandezza.
-2. Cella 13 dimensiona l'array con `len(grib.variables)`, che include le coordinate
-   (`number`, `step`, `valid_time`), non `data_vars`.
-3. Cella 17 usa `lista_di_liste`, mai definita.
-4. `check_conversion` costruisce il path CSV da una cartella diversa da quella di
-   scrittura, quindi riporta sempre file mancanti.
-5. `xr.open_dataset` su GRIB con 39 variabili miste solleva
-   `DatasetBuildError: key present and new value is different: key='time'`, visibile
-   negli output salvati: i campi *mean rate* hanno un asse temporale diverso dai
-   campi di analisi. Il notebook lo aggira solo nei blocchi commentati.
-
-`Data/2023/febbraio_2023.csv` e' vuoto (2 byte): la conversione non e' mai riuscita.
-
-### Fase 1 - Scaffolding e fondamenta (completata)
-
-- `pyproject.toml` con `uv`, indice `pytorch-cpu` esplicito per evitare i wheel CUDA
-  da ~2,5 GB nell'immagine Docker.
-- `variables.py`: 24 variabili registrate (17 istantanee, 5 cumulate, 2 statiche).
-- `slots.py`: aritmetica delle finestre di accumulo, sequenze di slot, rilevamento
-  buchi, split temporali, codifica ciclica del tempo. Non importa `config` per
-  evitare un ciclo: e' `config` a dipendere da qui per validarsi.
-- `config.py`: configurazione pydantic con validazione semantica (area allineata
-  alla griglia, target presenti tra le variabili scaricate, riferimenti delle teste
-  coerenti, percorsi confinati sotto `data_root`).
-- `tables.py`: schemi Parquet dichiarati e verificati in scrittura e rilettura.
-
-### Fase 2 - Ingestione dati (in corso)
-
-Completato:
-
-- `credentials.py`: risoluzione delle credenziali senza mai esporne il valore,
-  lettura in `utf-8-sig` per il BOM di Windows.
-- `scripts/check_cds_access.py`: diagnosi separata di credenziali, token, licenze e
-  disponibilita' temporale. Accesso verificato, vedi 5.1.
-- `tables.py`: schemi Parquet dichiarati e verificati a runtime.
-- `data/download.py`: una richiesta per mese e famiglia di variabili, ritaglio
-  all'area, ripresa e scrittura atomica. Collaudato con un client finto: nessun test
-  contatta il CDS.
-
-- `data/ingest.py` + `scripts/ingest_era5.py`: GRIB -> Zarr, catalogo Parquet, tabella
-  dei fold. Documentato in dettaglio in `INGESTION.md`.
-- `data/freshness.py` + `data/refresh.py` + `scripts/refresh_data.py`: aggiornamento
-  incrementale con gestione del mese in corso (vedi 4.3).
-
-Nota sui test: il backoff di produzione e' 30 s e i test sui riprovi lo azzerano via
-configurazione. Lasciandolo attivo la suite passava da 9 a 338 secondi.
-
-### Fase 3 - Modello e valutazione (completata)
-
-- `data/features.py`: **`InputLayout` e' la definizione autorevole dei canali**.
-  L'ordine dei canali e' un contratto silenzioso: scambiarne due non fa fallire nulla e
-  produce solo associazioni sbagliate, quindi esiste in un solo posto e tutto il resto
-  lo legge da li' (`benchmark_model.py` compreso, dove prima l'aritmetica era duplicata).
-- `data/dataset.py`: `ZarrWindowReader` con cache LRU, ritagli, bersagli.
-- `models/losses.py`: NLL gaussiana, hurdle, frazione; verificate contro la forma
-  chiusa e con gradienti finiti.
-- `train.py`, `evaluate.py`, `predict.py` e i rispettivi script.
-
-### Fase 4 - Confezionamento (completata)
-
-- `Dockerfile` e `docker-compose.yml`. **La build non e' stata verificata**: nessun
-  demone Docker attivo su questa macchina. Dichiarato, non presunto.
-- `scripts/build_notebooks.py` genera i due notebook con `nbformat`. Scriverli a mano
-  in JSON e' fragile e produce diff illeggibili; gli identificatori di cella sono
-  numerati perche' quelli casuali di `nbformat` sporcavano il diff a ogni rigenerazione.
-  Il notebook di inferenza e' stato **eseguito per intero** per verificare che giri.
-
-### 4.1 Fatti verificati sull'ingestione
-
-Struttura reale dei GRIB, ispezionata prima di scrivere il codice:
-
-| Famiglia | Struttura | Note |
-|---|---|---|
-| istantanee | `(time, latitude, longitude)` | asse temporale piatto, 7 variabili |
-| cumulate | `(time, step, latitude, longitude)` | corse di previsione, `valid_time` **bidimensionale** |
-| statiche | `(latitude, longitude)` | nessun asse temporale |
-
-Le cumulate sono il punto delicato: due corse al giorno (base 06 e 18 UTC) con step
-orari. Appiattendole si ottengono 756 istanti validi per un mese di 31 giorni, **zero
-duplicati**, tutte le 24 ore presenti.
-
-Verifiche sull'ingestione di gennaio 2024:
-
-| Cosa | Esito |
-|---|---|
-| Slot ingeriti | 93 su 93, 9 variabili, **0 NaN**, 17,7 s |
-| Plausibilita' fisica | tutte le 9 variabili in range (t2m 217-313 K, msl 939-1048 hPa) |
-| Somma della finestra di accumulo | ricalcolata dal GRIB in modo indipendente: **differenza 0,0** |
-| Chunk scritti | 12 per variabile invece di 358: Zarr salta i chunk interamente NaN |
-
-### 4.2 Rumore di quantizzazione su `sf` e `tp`
-
-Fisicamente la neve in equivalente d'acqua non puo' superare la precipitazione totale.
-Nei dati accade nel **12,26 %** dei punti.
-
-Non e' un difetto dell'ingestione. `tp` e `sf` sono impacchettati in GRIB come interi
-scalati **in modo indipendente**, quindi quando nevica puro (`sf` ~ `tp`)
-l'arrotondamento puo' far superare `tp`. Misure: violazione massima **0,0055 mm**,
-rapporto `sf/tp` massimo **1,043**, e dove `tp = 0` il valore di `sf` non supera
-0,005 mm.
-
-Decisione: l'ingestione **non corregge** il dato, per restare fedele alla sorgente. La
-correzione appartiene alla costruzione del target, dove il rapporto va limitato a [0, 1]
-e definito solo sopra la soglia di 0,1 mm. La testa `fraction_of` resta appropriata.
-
-### 4.3 Il mese in corso e' sempre parziale
-
-ERA5 e' una rianalisi, non una previsione: esce con alcuni giorni di ritardo, quindi in
-qualunque momento l'ultimo mese disponibile si ferma a meta'. Un file che copre mezzo
-mese **non e' corrotto**, e riscaricarlo a ogni esecuzione sprecherebbe ore.
-
-La frontiera non viene assunta da una latenza fissa ma **letta dal catalogo STAC del
-CDS** (`extent.temporal.interval`), che il 2026-08-17 dichiarava `2026-08-11`: latenza
-reale di 6 giorni. Se il catalogo non risponde si ricade su una stima prudente di 8
-giorni, **dichiarata come stima** invece che spacciata per certa: chiedere un giorno non
-ancora pubblicato fa rifiutare l'intera richiesta, mentre chiederne uno in meno costa
-solo un aggiornamento rimandato.
-
-Il manifest registra ora **quanti giorni copre ogni file**. Un mese viene riscaricato
-solo quando i giorni pubblicati superano quelli gia' presenti; i mesi interamente futuri
-non vengono mai richiesti. Un manifest scritto prima di questa colonna resta leggibile e
-i suoi mesi sono considerati completi, per non innescare un riscaricamento generale.
-
-### 4.4 Difetti trovati misurando, non leggendo
-
-| Difetto | Come e' emerso | Correzione |
-|---|---|---|
-| `log1p` inefficace su `tp` | I valori normalizzati restavano ~0,0007: in metri la trasformazione non fa nulla | `transform_scale=1000.0` (metri -> millimetri); intervallo dei canali da [-11,3; 18,1] a [-4,5; 6,5] |
-| 0,42 s per campione gia' in cache | `cProfile`: `valid_time` costava 5,81 s su 5,88 s, riletto via dask a ogni chiamata | Istanti caricati una volta all'apertura: **0,424 -> 0,013 s, 32 volte piu' veloce** |
-| Ipotesi di re-chunking spaziale | Misurata invece che adottata: `(8,96,96)` costa 510 ms e `(8,64,64)` 884 ms contro i 207 ms attuali | Ipotesi **respinta**; evitata una re-ingestione inutile |
-| Identificatori di cella casuali | Rigenerare un notebook invariato produceva comunque un diff | Numerazione deterministica, verificata per hash |
-
-### 4.5 Calibrazione delle probabilita'
-
-La rete addestrata con la log-verosimiglianza **ordina** bene ma sbaglia la **scala**:
-diceva 0,15 dove la frequenza osservata era 0,01. Poiche' l'affidabilita' e' fra le
-grandezze richieste, la scala va corretta.
-
-Correzione adottata: **regressione isotonica** (pool adjacent violators, ~30 righe,
-nessuna dipendenza in piu'). Monotona, quindi non inverte mai l'ordinamento appreso
-dalla rete, e non parametrica, perche' la forma della distorsione non e' nota a priori.
-
-**Il protocollo conta piu' dell'algoritmo**: la mappa e la soglia di decisione si
-stimano sulla **validazione** e si misurano sul **test**. Farlo sullo stesso split
-darebbe un guadagno apparente che sparirebbe al primo dato nuovo.
-
-Effetto misurato sul test del fold 0 (199 finestre mai viste):
-
-| | grezze | calibrate |
-|---|---|---|
-| Errore di calibrazione | 0,0702 | **0,0392** |
-| Brier | 0,1841 | **0,1785** |
-
-Un difetto del **mio metodo di valutazione**, trovato e corretto: avevo ottimizzato la
-soglia di decisione della pioggia ma lasciato quella della neve a 0,5. La probabilita'
-di neve e' un prodotto di due probabilita', quindi vive su una scala molto piu' bassa:
-con 0,5 il modello non prevedeva quasi mai neve e l'F1 risultava 0,194. Scegliendo la
-soglia sulla validazione come per la pioggia, l'F1 sale a **0,553**.
-
-### 4.6 Qualita' misurata sul test del fold 0
-
-Modello addestrato 15 epoche, migliore all'epoca 13 (validazione 2,063 -> 0,915).
-**Attenzione al contesto**: con i mesi finora ingeriti il fold 0 ha solo 64 finestre di
-addestramento, cioe' in pratica il solo gennaio 2024. I numeri sono quindi un limite
-inferiore, non il potenziale del modello.
-
-| Grandezza | Modello | Persistenza |
-|---|---|---|
-| Temperatura, RMSE | **4,08 K** | 4,64 K |
-| Temperatura, MAE | **2,91 K** | 3,08 K |
-| Pioggia, F1 | **0,667** | 0,659 |
-| Pioggia, Brier Skill Score | **+0,229** | -0,079 |
-| Pioggia, errore di calibrazione | **0,039** | 0,250 |
-| Neve, F1 | 0,553 | **0,579** |
-| Neve, Brier | **0,072** | 0,093 |
-
-Il dato che conta non e' la media ma **l'andamento con la scadenza**:
-
-| Scadenza | 0 (6 h) | 4 (42 h) | 8 (72 h) |
-|---|---|---|---|
-| F1 pioggia, modello | 0,687 | 0,649 | **0,661** |
-| F1 pioggia, persistenza | 0,786 | 0,646 | **0,598** |
-| F1 neve, modello | 0,557 | 0,559 | **0,548** |
-| F1 neve, persistenza | 0,740 | 0,558 | **0,499** |
-| BSS pioggia, modello | 0,274 | 0,207 | **0,209** |
-| BSS pioggia, persistenza | 0,321 | -0,120 | **-0,274** |
-
-La persistenza vince nelle prime ore e **degrada**; il modello e' quasi **piatto**. Il
-sorpasso avviene intorno alle 24-36 ore, ed e' esattamente il comportamento che ci si
-attende da un modello che ha imparato dinamica invece di copiare lo stato iniziale.
-
-## 5. Verifiche eseguite
-
-| Cosa | Come | Esito |
-|---|---|---|
-| Registro variabili | import ed estrazione spec, nome sconosciuto | superato: 24 spec, errore esplicito |
-| Finestre di accumulo | slot 06 -> ore 3..10, slot 18 -> 15..22 | superato, coerente con la convenzione ERA5 `(H-1, H]` |
-| Copertura giornaliera | `accumulation_coverage([6,12,18], 8)` | 20 ore su 24, 4 conteggi ridondanti (come dichiarato) |
-| Vincolo mezzanotte | slot notturni con finestra 8 h | superato: solleva `ValueError` |
-| Rilevamento buchi | serie completa e serie bucata | superato |
-| Periodo a granularita' di giorno | mesi parziali agli estremi | superato: 2026-08 troncato a 11 giorni, nessuna richiesta oltre il limite pubblicato |
-| Fold a finestra mobile | copertura stagionale dei test | superato: 6 fold, tutti i 12 mesi coperti, mesi nevosi inclusi |
-| Codifica temporale | ciclicita' giornaliera e stagionale | superato |
-| Ambiente runtime | `tests/test_environment.py` | superato: backend `cfgrib` registrato in xarray, binari eccodes raggiungibili, torch senza CUDA, round-trip Parquet |
-| Configurazione | `tests/test_config.py` | superato: 30 casi, incluse tutte le incoerenze semantiche |
-| Layout canali e rete | `tests/test_models.py` | superato: 45 casi |
-| Rete su dominio reale | forward 261 x 401 (non divisibile per 8) | superato: forma preservata grazie al padding riflesso |
-| Costo su CPU | `scripts/benchmark_model.py` | misurato, vedi sotto |
-| Credenziali | `tests/test_credentials.py` | superato: 18 casi, incluso il BOM e la non esposizione del valore |
-| Layer tabellare | `tests/test_tables.py` | superato: 20 casi, incluso un Parquet con schema vecchio |
-| Downloader | `tests/test_download.py` | superato: 27 casi con client finto (ripresa, riprovi, scrittura atomica) |
-| Ingestione | `tests/test_ingest.py` | superato: 27 casi, dataset sintetici + integrazione sui GRIB reali |
-| Ingestione su dati reali | gennaio 2024 | superato: 93 slot, 0 NaN, accumulo ricalcolato con differenza 0,0 |
-| Lint | `ruff check src tests scripts` | nessun rilievo |
-| Suite completa | `pytest tests` | 305 superati |
-
-### 5.1 Accesso CDS verificato
-
-`scripts/check_cds_access.py`, eseguito il 2026-08-17:
-
-| Controllo | Esito |
-|---|---|
-| Credenziali lette da `.env` | url e key presenti |
-| Classe client effettiva | `ecmwf.datastores.legacy_client.LegacyClient` (dispatch confermato) |
-| Autenticazione | OK |
-| `licence-to-use-copernicus-products`, `terms-of-use-cds` | gia' accettate |
-| Estensione dataset | **1940-01-01 .. 2026-08-11** (latenza 6 giorni) |
-| Download reale su 2024-01-01 | OK, 116 byte |
-| Download reale su 2026-08-11 | OK, 116 byte |
-
-Due difetti del mio script corretti durante la verifica:
-
-1. Il primo tentativo passava `dataset=` a `get_licences`, che accetta **solo**
-   `scope`. Il fallback elencava tutte le 48 licenze del portale e le segnalava come
-   da accettare: `--accept-licences` ne avrebbe accettate 44 **estranee** a nome
-   dell'utente. Rimossa l'accettazione in blocco; ora l'unico test della licenza e' il
-   download reale e si accetta solo una licenza indicata esplicitamente.
-2. La disponibilita' veniva sondata provando date a caso. Il campo `end_datetime` dei
-   metadati della collection e' la fonte autorevole ed evita richieste inutili.
-
-Nota: la collection espone `licences: null`, quindi **l'API non permette di sapere
-quali licenze richiede un singolo dataset**.
-
-### Costo misurato su CPU (non stimato)
-
-Rete con 221 canali di input, 45 di uscita, `base_channels=48`, `depth=3`:
-
-| | |
-|---|---|
-| Parametri | 9.968.685 |
-| Passo di training (batch 4, crop 96 x 96) | 1,54 s |
-| Per campione | 0,39 s |
-| **Epoca sull'intero train set (1504 campioni)** | **~10 min** |
-| 20 epoche sull'intero train set | ~3,3 h |
-| Inferenza sul dominio intero 261 x 401 | 1,51 s |
-
-Conclusione: il training alla risoluzione nativa 0.25 gradi **e' praticabile su questa
-CPU** grazie all'approccio a crop. L'ipotesi piu' rischiosa del progetto e' quindi
-verificata.
-
-## 6. Problemi aperti
-
-### 6.1 Test set monostagionale (RISOLTO con la finestra mobile)
-
-Misurato sul periodo 2024-01-01 .. 2026-08-11 con split contiguo:
-
-| Split | Periodo | Slot | Mesi nevosi |
-|---|---|---|---|
-| train | 2024-01-01 .. 2025-10-29 | 2003 | 32% |
-| val | 2025-11-08 .. 2026-03-31 | 429 | 84% |
-| test | 2026-04-10 .. 2026-08-11 | 370 | **0%** |
-
-Risolto passando alla rolling origin validation (vedi 2.1): 6 fold i cui blocchi di
-test coprono tutti i 12 mesi. Copertura verificata da test automatico, non a occhio.
-
-### 6.2 Latenza ERA5
-
-ERA5/ERA5T ha 5-6 giorni di ritardo. Il notebook di inferenza produrra' quindi una
-previsione per giorni **gia' trascorsi** (hindcast verificabile, utile per validare,
-ma non una previsione operativa). Per il tempo reale servirebbe una seconda sorgente
-(`data.ecmwf.int`). Il downloader e' progettato con sorgente sostituibile.
-
-### 6.3 Credenziali CDS (risolto, con un'avvertenza)
-
-Credenziali presenti in `.env` (ignorato da git) e accesso verificato end-to-end, vedi
-5.1. Restano due note operative:
-
-- il token va **ruotato** quando il download massivo e' concluso, perche' e' transitato
-  in un canale non controllato;
-- il download reale non e' ancora stato lanciato: la pipeline oltre `download.py` e'
-  ancora validata solo su dati sintetici.
-
-### 6.4 Fattibilita' del training a 0.25 gradi su CPU (RISOLTO)
-
-Misurato: ~10 minuti per epoca sull'intero train set, 1,5 s per l'inferenza sul
-dominio intero. Il training a piena risoluzione e' praticabile. Vedi la tabella dei
-costi nella sezione 5.
-
-`samples_per_epoch` in `configs/default.yaml` e' fermo a 512 per prudenza: dato il
-costo misurato conviene alzarlo a coprire tutto il train set (1504 campioni).
-
-### 6.5 Installazione dipendenze (risolto)
-
-Il primo `uv sync` e' fallito per timeout di rete su `eccodes`
-(`UV_HTTP_TIMEOUT` di default 30 s). Rilanciato con `UV_HTTP_TIMEOUT=600`: completato,
-144 pacchetti. Da riportare nel README e nel Dockerfile.
+Documenti: `INGESTION.md` (fatti verificati sui GRIB), `RESEARCH.md` (ricerca
+tecnologica e scarti motivati), `DATA_ANALYSIS.md` (analisi esplorativa),
+`VARIANTS.md` (confronto fra architetture).
 
 ---
 
-## 7. Note verificate sulle librerie
+## 4. I dati
 
-Accertate leggendo il sorgente installato, non la documentazione a memoria.
+### 4.1 Dominio e periodo
 
-### `cdsapi` 0.7.7
+Il dominio non e' stato scelto a mano: e' stato ricavato dagli output gia' presenti
+nel notebook esplorativo del repository originale. Il periodo termina alla data
+dichiarata dai metadati della collection CDS, letta a runtime e non scritta a memoria:
+ERA5 ha circa sei giorni di latenza, quindi **non arriva a oggi**. Ne consegue un
+fatto importante per l'onesta' del progetto: cio' che chiamiamo "previsione" e' in
+realta' un *hindcast verificabile*, e questo e' un pregio, perche' ogni previsione ha
+una verita' con cui confrontarsi.
 
-- Le credenziali sono risolte da `get_url_key_verify`: prima `CDSAPI_URL` e
-  `CDSAPI_KEY`, poi il file indicato da `CDSAPI_RC` o `~/.cdsapirc`.
-- `Client.__new__` fa **dispatch dinamico**: se il token contiene `:` (vecchio
-  formato `<UID>:<APIKEY>`) restituisce `cdsapi.Client`, altrimenti, come accade con
-  il Personal Access Token attuale, restituisce
-  `ecmwf.datastores.legacy_client.LegacyClient`. Verificato che le due classi
-  accettino gli stessi keyword argument, quindi il codice resta valido su entrambi i
-  percorsi.
-- La risoluzione delle credenziali avviene dentro `__new__`, quindi la costruzione
-  del client fallisce prima di qualunque richiesta. Il progetto le verifica a monte
-  per produrre un messaggio con la procedura da seguire.
-- **Sicurezza**: con `debug=True` il client registra `dict(url=..., key=...)`,
-  esponendo la chiave nei log. Il client va costruito con `debug=False` (default).
-- `retrieve(name, request, target=...)` scrive il file direttamente: **non** va
-  concatenato `.download()` come in `Data/era5-request.py`.
+### 4.2 Struttura di archiviazione
 
-### Altre
+Zarr per il tensore, Parquet per i cataloghi. La divisione non e' estetica: un tensore
+denso di 2862 x 261 x 401 valori per variabile ha bisogno di accesso a blocchi e
+compressione, cose che un formato colonnare orientato alle righe non offre. Polars
+resta per cio' in cui e' imbattibile, cioe' i registri, le metriche e le giunzioni.
 
-- `zarr` risolto alla **3.3.0**: l'API dei codec differisce dalla 2.x. Il progetto usa
-  solo l'astrazione di xarray per non accoppiarsi a quella differenza.
-- Il parametro `grid` (regridding lato server) non compare nel form web del CDS e
-  alcune installazioni lo rifiutano: viene inviato solo quando la risoluzione
-  richiesta differisce dalla nativa.
+Blocchi `(8, 261, 401)`. Un tentativo di riblocchettare anche nello spazio e' stato
+**misurato e scartato**: peggiorava le letture per finestra, che sono il caso d'uso
+dominante.
+
+### 4.3 Anomalie spiegate, non corrette
+
+**Neve maggiore della precipitazione totale nel 12,26 % delle celle.** Sembra una
+violazione fisica. Non lo e': i messaggi GRIB impacchettano `tp` e `sf` come interi
+con passi di quantizzazione **indipendenti**. La violazione non supera mai 1,5 volte il
+passo di quantizzazione e la sua correlazione con l'intensita' della precipitazione e'
+0,013, cioe' nulla. E' rumore di rappresentazione, non un errore del dato. Per questo
+il bersaglio della frazione nevosa viene limitato a [0, 1] **nel bersaglio** e non nei
+dati archiviati: si vincola cio' che si chiede al modello, non si falsifica l'archivio.
+
+**Gli istanti non sono equidistanti.** 06Z, 12Z e 18Z distano 6, 6 e 12 ore. Tre
+istanti fanno esattamente un giorno. Sembra un dettaglio ed e' invece la scoperta piu'
+importante dell'analisi: vedi la sezione 6.
+
+---
+
+## 5. Le grandezze in ingresso
+
+245 canali: 189 di stato, 27 di tendenza, 21 di velocita' del vento, 2 statici, 2 di
+latitudine, 4 di codifica temporale.
+
+**Le temperature sono in gradi Celsius.** La conversione e' dichiarata sulla variabile
+e applicata **una volta sola**, subito dopo la lettura. Questo non e' cosmetico:
+convertendo piu' a valle, `normalize` e `denormalize` smetterebbero di essere l'una
+l'inversa dell'altra. Il checkpoint gia' addestrato e' rimasto valido **bit per bit**,
+perche' traslare dato e media della stessa quantita' non cambia il valore normalizzato,
+e un test lo verifica.
+
+### 5.1 Fisica derivata, senza scaricare nulla di nuovo
+
+**`solar.py`** implementa le formule di Spencer (1971): declinazione, fattore di
+distanza Terra-Sole, equazione del tempo, coseno dell'angolo zenitale, insolazione al
+limite dell'atmosfera, durata del giorno con gestione esplicita del caso polare. Trenta
+test la confrontano con riferimenti astronomici noti: obliquita' 23,44 gradi, perielio
+al terzo giorno dell'anno, afelio al 185esimo.
+
+**`thermo.py`** ricava dalla temperatura e dal punto di rugiada gia' scaricati:
+tensione di vapore saturo, umidita' relativa, depressione del punto di rugiada,
+pressione al suolo dalla pressione al livello del mare, umidita' specifica, rapporto di
+mescolanza, **contenuto di calore latente** e temperatura potenziale equivalente di
+Bolton. Trentacinque test contro valori tabulati.
+
+Durante quella verifica un test falliva. **Il codice era giusto, l'asserzione era
+sbagliata**: l'invariante che avevo scritto, theta_e >= T, vale solo sotto i 1000 hPa,
+perche' sopra quella pressione la compressione porta la temperatura potenziale sotto
+quella reale. L'invariante corretto e' theta_e >= theta. E' stato corretto il test, non
+il codice.
+
+---
+
+## 6. La scoperta che ha cambiato il progetto
+
+L'analisi di prevedibilita' mostrava una correlazione che **non** decadeva in modo
+monotono con la scadenza: risaliva a 3, 6 e 9 istanti. Applicando la regola "i dati
+sono veri", la spiegazione e' risultata essere un mio errore di etichetta: avevo
+scritto la colonna delle ore come `scadenza x 6`, ma gli istanti non sono equidistanti,
+e 3 istanti sono **un giorno esatto**. I picchi erano semplicemente **la stessa ora del
+giorno**.
+
+Questo ha smascherato un riferimento molto piu' forte di quello che stavamo usando.
+
+| scadenza | ore | persistenza ingenua | **persistenza diurna** | guadagno |
+|---:|---:|---:|---:|---:|
+| 1 | 8 | 4,535 | **2,401** | 47,1 % |
+| 3 | 24 | 2,401 | 2,401 | 0 % |
+| 5 | 40 | 5,201 | **3,173** | 39,0 % |
+| 9 | 72 | 3,557 | 3,557 | 0 % |
+
+Ripetere *ieri alla stessa ora* costa zero e raggiunge un errore quadratico di circa
+3,0 gradi. Il modello addestrato ne faceva **4,45**. Il vantaggio dichiarato in
+precedenza era quindi un artefatto di un riferimento troppo debole: contro il
+riferimento giusto, **il modello perdeva**.
+
+### 6.1 La conseguenza operativa
+
+Se un riferimento gratuito e' cosi' forte, chiedere alla rete di ricostruirlo da zero
+e' uno spreco di capacita'. La testa gaussiana ora produce uno **scarto** che viene
+sommato all'osservazione piu' recente alla stessa ora del bersaglio. Solo la media
+viene traslata: la log-varianza descrive l'incertezza dello scarto e non va spostata.
+
+L'effetto e' misurato, non supposto: a parita' assoluta di protocollo, tre passate
+ridotte portano da **6,613** a **3,652** gradi di errore quadratico.
+
+Il riferimento diurno e' anche entrato nella valutazione come modello a se
+(`persistence_diurnal`), accanto a quella ingenua e alla climatologia.
+
+---
+
+## 7. Il modello
+
+### 7.1 Contratto
+
+La rete e' un encoder-decoder a U completamente convoluzionale: si addestra su ritagli
+e si applica alla griglia intera. Produce **un solo tensore** `(B, C, H, W)`; la
+mappatura dei canali su (variabile, componente, scadenza) e' dichiarata in
+`OutputLayout`. Indicizzare quei canali a mano sarebbe l'errore piu' silenzioso
+possibile: scambiare media e log-varianza non fa fallire nulla, produce solo previsioni
+sbagliate.
+
+I pesi finali sono azzerati all'inizializzazione: la rete parte da una previsione
+costante, non da rumore.
+
+### 7.2 Le varianti confrontabili
+
+Il confronto fra architetture ha valore solo se **cambia una cosa sola**. Qui la cosa
+sola e' il **blocco elementare**: scheletro, canali di ingresso, layout di uscita, dati,
+perdita e protocollo restano identici.
+
+| variante | parametri | ms/passata | idea |
+|---|---:|---:|---|
+| `conv` | 9,98 M | 225 | convoluzione residua, riferimento |
+| `attention` | 13,37 M | 415 | attenzione a finestre 8x8 con bias di posizione relativa |
+| `fourier` | 8,99 M | 201 | convoluzione spettrale sui modi bassi, ricettivo globale |
+| `recurrent` | 28,93 M | 1114 | ricorrenza convoluzionale a pesi condivisi |
+| `hybrid` | 16,42 M | 371 | somma di ramo locale e ramo spettrale |
+
+**Le varianti che perdono non vengono cancellate.** Restano in
+`src/dwf/models/variants/`, documentate e selezionabili con `model.variant`, perche' il
+risultato potrebbe ribaltarsi con piu' dati e perche' la misura che le ha scartate deve
+restare riproducibile.
+
+Due precisazioni oneste:
+
+- La variante di Fourier era arrivata a **228 milioni di parametri**. La causa era mia:
+  allocavo 16 modi per asse mentre al collo di bottiglia la griglia si riduce a 12
+  celle, quindi la gran parte dei pesi veniva troncata a ogni passata e non veniva mai
+  addestrata. Con 8 modi e un ramo spettrale piu' stretto costa **meno** della
+  convoluzione.
+- La variante ricorrente **non e' il ConvLSTM temporale** della letteratura. Quello
+  consuma una sequenza `(B, T, C, H, W)`, il che cambierebbe il layout di ingresso,
+  cioe' proprio la variabile che il confronto tiene ferma. Qui si misura l'altra
+  proprieta' interessante: la profondita' effettiva a parametri costanti.
+
+Tecnologie escluse e perche', in dettaglio in `RESEARCH.md`: rappresentazioni sferiche
+(il dominio non e' una sfera), grafi (su griglia regolare sono una convoluzione piu'
+lenta), diffusione (produce ensemble, mentre qui l'incertezza e' gia' calibrata),
+modelli fondazionali (richiedono livelli di pressione non scaricati).
+
+### 7.3 La perdita
+
+Somma pesata delle teste, piu' due termini aggiunti su richiesta e ciascuno con la
+propria giustificazione misurata.
+
+**Peso di area.** La griglia e' regolare in gradi, non in chilometri: a 70 gradi una
+cella copre il 34 % di una cella equatoriale. Senza correzione la rete spenderebbe
+capacita' sull'Artico.
+
+**Fuoco su Vigo di Cadore.** Una campana attorno al punto, isotropa in chilometri e non
+in gradi. Il guadagno e' volutamente contenuto: alzarlo trasformerebbe un modello di
+dominio in un modello locale addestrato su una manciata di celle, che generalizzerebbe
+peggio ovunque, Vigo compreso.
+
+Entrambi i pesi sono **normalizzati a media unitaria**, quindi cambiarli non cambia la
+scala della perdita e i pesi relativi fra le teste restano confrontabili.
+
+**Termine spettrale.** Sotto errore quadratico puro, se la correlazione fra previsione
+e realta' vale rho, il minimo si ottiene producendo un campo con ampiezza rho volte
+quella vera: sfumare conviene, perche' una struttura nel posto sbagliato viene punita
+due volte, dove c'e' e dove manca. E' esattamente il difetto misurato sul primo
+modello, che sottostimava di 4,8 gradi l'escursione a mezzogiorno. Confrontare i moduli
+della trasformata di Fourier premia l'ampiezza corretta **senza** reintrodurre la
+penalizzazione di posizione. Un test lo dimostra su dati sintetici: con il solo errore
+quadratico l'ottimo cade a 0,6 per una correlazione di 0,6, e aggiungendo il termine si
+sposta verso l'ampiezza piena. Un secondo test verifica che traslare il campo lasci il
+termine a zero.
+
+Il termine e' applicato **solo alle variabili continue**: la letteratura documenta un
+peggioramento delle metriche di occorrenza della precipitazione.
+
+---
+
+## 8. Valutazione
+
+### 8.1 Protocollo
+
+Validazione a **finestra mobile**, 6 fold. Uno split unico in tre blocchi contigui
+avrebbe concentrato il test nella coda estiva del periodo: la neve non sarebbe stata
+valutabile e la temperatura sarebbe stata misurata su un solo regime. Con i fold i
+blocchi di test coprono **tutti e dodici i mesi**, mantenendo in ciascun fold l'ordine
+train -> validazione -> test. Alle giunzioni si scartano 30 istanti per attenuare
+l'autocorrelazione.
+
+La calibrazione e le soglie di decisione si stimano **sulla validazione** e si misurano
+**sul test**. Stimarle e misurarle sullo stesso blocco gonfierebbe il risultato.
+
+### 8.2 Risultati sul test del fold 0
+
+| | dwf | persistenza | **persistenza diurna** |
+|---|---:|---:|---:|
+| t2m RMSE (degC) | 4,45 | 4,73 | **3,16** |
+| tp Brier | **0,182** | 0,261 | 0,274 |
+| tp skill score | **+0,193** | -0,156 | -0,212 |
+| sf Brier | **0,061** | 0,075 | 0,081 |
+
+Lettura onesta: il modello **vince nettamente sulle probabilita'** di pioggia e neve, e
+sulla temperatura **perde** contro il riferimento diurno. E' la ragione per cui e' stato
+introdotto l'ancoraggio, il cui effetto e' gia' misurato nel banco comparativo.
+
+### 8.3 Calibrazione
+
+Isotonica, con PAVA scritto a mano. Sul test: errore di calibrazione da 0,0702 a
+**0,0392**, Brier da 0,1841 a **0,1785**. Le soglie scelte sulla validazione sono 0,38
+per la pioggia e 0,23 per la neve. Quest'ultima ha corretto un difetto reale: la soglia
+era rimasta a 0,5 e il punteggio F1 della neve valeva 0,194; scegliendola sui dati e'
+salito a **0,553**.
+
+---
+
+## 9. Vigo di Cadore
+
+Cella riga 114, colonna 210 (46,50 N, 12,50 E), frazione di terra 1,00.
+
+| | |
+|---|---|
+| quota del modello | 1463 m |
+| quota reale del paese | 951 m |
+| scarto | **512 m** |
+| bias termico implicato (6,5 K/km) | circa **3,3 K** piu' freddo |
+
+Non e' un errore del modello ne' del dato: a 0,25 gradi una cella copre circa 28 km e
+media tutto il Cadore, creste comprese. Per passare dalla cella al paese serve una
+correzione di quota esplicita. Il fatto e' dichiarato nel report PDF, cosi' chi legge
+non scambia un limite di risoluzione per un errore di previsione.
+
+L'escursione diurna locale misurata e' di **6,7 gradi**, quasi il doppio della media di
+dominio: e' un punto severo per il modello.
+
+---
+
+## 10. Sicurezza
+
+I pesi si salvano in `models/` come `.npz` letto con `allow_pickle=False`, con i
+metadati in JSON separato. Il motivo e' concreto: il codice usava
+`torch.load(..., weights_only=False)`, cioe' l'impostazione massimamente insicura, che
+esegue codice arbitrario contenuto nel file.
+
+La sicurezza non e' **dichiarata** ma **dimostrata**: un test costruisce un payload che
+sotto pickle **si esegue davvero**, e un secondo test verifica che il caricatore del
+progetto lo rifiuti **senza eseguirlo**. Senza il primo test, il secondo non
+proverebbe nulla.
+
+Le credenziali non vengono mai stampate ne' registrate. `.env`, `datasets/` e `models/`
+sono fuori dal controllo di versione.
+
+---
+
+## 11. Difetti trovati e corretti
+
+Molti sono miei. Sono elencati perche' il metodo conta quanto il risultato.
+
+| difetto | come e' emerso | esito |
+|---|---|---|
+| Ordine degli assi nell'impilamento | `IndexError` a runtime | trasposizione esplicita |
+| `log1p` inefficace sulla pioggia in metri | ispezione della scala | fattore di scala 1000 |
+| 0,42 s per campione | profilazione, non intuito | `valid_time` in cache, 32 volte piu' veloce |
+| Indice sbagliato in PAVA | test di monotonia | riscritto con variabili esplicite |
+| Soglia neve lasciata a 0,5 | F1 assurdamente basso | scelta sulla validazione, F1 0,553 |
+| Invariante theta_e sbagliato **nel test** | test rosso | corretto il test, non il codice |
+| Percorso Zarr sbagliato | "non trovo i dati" | i dati c'erano, sbagliavo io |
+| Manifest scritto solo a fine corsa | ispezione | scritto dopo ogni task |
+| `torch.load(weights_only=False)` | revisione di sicurezza | sostituito e dimostrato sicuro |
+| Etichette orarie `scadenza x 6` | correlazione non monotona | istanti non equidistanti |
+| Riferimento troppo debole | conseguenza della precedente | aggiunta la persistenza diurna |
+| 228 M di parametri nella variante spettrale | misura del costo | modi ridotti, ora piu' leggera di `conv` |
+| Build Docker fallita all'ultimo strato | build reale | `README.md` e `LICENSE` mancanti nell'immagine |
+
+---
+
+## 12. Limiti noti
+
+1. **Il modello attuale e' ancora quello non ancorato.** L'ancoraggio, la pesatura e il
+   termine spettrale sono implementati e testati, e il banco comparativo ne misura
+   l'effetto, ma il modello finale a scala piena va riaddestrato.
+2. **Il protocollo del banco e' ridotto** (ritagli piccoli, poche passate). Ordina le
+   alternative, non produce il modello da consegnare, e puo' favorire chi converge in
+   fretta.
+3. **Il calore latente nel report** usa il punto di rugiada dell'ultimo istante
+   osservato, perche' la previsione non lo contiene. E' un'ipotesi debole su 72 ore:
+   quel campo va letto come struttura spaziale, non come previsione di umidita'. Il
+   limite e' stampato sulla pagina.
+4. **Le mappe non hanno proporzioni geografiche fedeli**: cartopy non e' fra le
+   dipendenze e a latitudini diverse la scala nord-sud e est-ovest divergono.
+5. **ecCodes 2.28 nel container** contro il 2.42 raccomandato: ingerire sull'host.
+6. **Il 2024 e' incompleto**: mancano da febbraio a dicembre, in scaricamento. Con quei
+   mesi i fold coprono due cicli annuali invece di uno.
+7. **La chiave CDS va ruotata** se e' mai transitata in un canale non cifrato.
+
+---
+
+## 13. Che cosa farei dopo
+
+1. Chiudere il banco comparativo e riaddestrare la variante vincente a scala piena.
+2. Misurare la **curva di capacita'** invece di ingrandire la rete a intuito: la
+   letteratura controllata riporta che i backbone **saturano**, e questo contraddice
+   l'idea che basti fare piu' grande.
+3. Screening delle caratteristiche candidate contro il **cambiamento futuro**, non
+   contro il valore futuro: una variabile che predice bene il valore ma non il
+   cambiamento non aggiunge nulla alla persistenza.
+4. Correzione di quota esplicita per il passaggio da cella a localita'.
+5. Estendere i fold ai due anni completi.
