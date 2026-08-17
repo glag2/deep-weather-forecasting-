@@ -12,6 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
+import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -91,6 +92,16 @@ class RegionConfig(_Base):
     def cds_area(self) -> list[float]:
         """Area nell'ordine richiesto dal CDS: [North, West, South, East]."""
         return [self.north, self.west, self.south, self.east]
+
+    @property
+    def latitudes(self) -> np.ndarray:
+        """Latitudini della griglia, **decrescenti** come le fornisce ERA5."""
+        return np.linspace(self.north, self.south, self.n_lat)
+
+    @property
+    def longitudes(self) -> np.ndarray:
+        """Longitudini della griglia, crescenti."""
+        return np.linspace(self.west, self.east, self.n_lon)
 
 
 class TimeConfig(_Base):
@@ -358,6 +369,12 @@ class PathsConfig(_Base):
     static_name: str = "era5_static.zarr"
     tables_subdir: str = "tables"
     artifacts_subdir: str = "artifacts"
+
+    # Slot per blocco Zarr. Compromesso misurabile: blocchi grandi riducono il numero
+    # di letture ma per un crop piccolo trasferiscono dati inutili, blocchi piccoli
+    # fanno il contrario. Lo spazio resta non suddiviso perche' l'inferenza legge
+    # sempre il dominio intero.
+    chunk_slots: Annotated[int, Field(ge=1)] = 8
 
 
 class DownloadConfig(_Base):

@@ -168,6 +168,21 @@ FORECAST = TableSpec(
     },
 )
 
+FOLDS = TableSpec(
+    filename="folds.parquet",
+    description="Assegnazione autorevole slot -> split per ciascun fold della finestra mobile.",
+    schema={
+        # Con la validazione a finestra mobile lo stesso slot appartiene a split
+        # diversi in fold diversi, quindi la colonna `split` di `slots.parquet` puo'
+        # essere solo un riferimento cronologico indicativo: l'assegnazione vera vive
+        # qui, ed e' questa che dataset e valutazione devono leggere.
+        "fold": pl.Int16,
+        "split": SPLIT_ENUM,
+        "slot_index": pl.Int32,
+        "is_sample_start": pl.Boolean,
+    },
+)
+
 DOWNLOADS = TableSpec(
     filename="downloads.parquet",
     description="Esito delle richieste al CDS, una riga per file richiesto.",
@@ -191,6 +206,7 @@ ALL_SPECS: tuple[TableSpec, ...] = (
     SLOTS,
     SLOT_STATS,
     VARIABLES,
+    FOLDS,
     DOWNLOADS,
     CHANNELS,
     NORM_STATS,
