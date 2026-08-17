@@ -31,6 +31,7 @@ from dwf.data.features import (
     InputLayout,
     NormStats,
     build_input_tensor,
+    to_working_units,
 )
 from dwf.tables import FOLDS, read_table
 
@@ -148,9 +149,12 @@ class ZarrWindowReader:
                 return self._cache[chiave]
 
         finestra = {
-            nome: np.asarray(
-                self._store[nome].isel(slot=slice(start, start + length)).values,
-                dtype=np.float32,
+            nome: to_working_units(
+                nome,
+                np.asarray(
+                    self._store[nome].isel(slot=slice(start, start + length)).values,
+                    dtype=np.float32,
+                ),
             )
             for nome in self._variables
         }

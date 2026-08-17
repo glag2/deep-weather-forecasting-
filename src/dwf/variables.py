@@ -31,13 +31,34 @@ class VariableSpec:
     # Portandola in millimetri, 0.1 mm e 70 mm diventano 0.095 e 4.26.
     transform_scale: float = 1.0
     non_negative: bool = False
+    # Valore sommato al dato grezzo appena letto dallo store, per portarlo nell'unita'
+    # in cui lavora tutta la pipeline. ERA5 esprime le temperature in kelvin mentre il
+    # progetto le vuole in gradi Celsius: convertire qui, in lettura, e' l'unico punto
+    # che tiene normalizzazione, target, metriche e previsioni nella stessa unita'.
+    store_offset: float = 0.0
+
+    @property
+    def working_units(self) -> str:
+        """Unita' in cui la variabile viene usata, dopo `store_offset`."""
+        if self.units == "K" and self.store_offset != 0.0:
+            return "degC"
+        return self.units
+
+
+# Zero Celsius in kelvin. ERA5 archivia le temperature in kelvin; il progetto le
+# usa in gradi Celsius, che e' l'unita' richiesta per i risultati.
+KELVIN_AT_ZERO_CELSIUS = 273.15
 
 
 _SPECS: tuple[VariableSpec, ...] = (
     # --- istantanei ---
-    VariableSpec("2m_temperature", "t2m", "instantaneous", "K", "Temperatura a 2 m"),
     VariableSpec(
-        "2m_dewpoint_temperature", "d2m", "instantaneous", "K", "Punto di rugiada a 2 m"
+        "2m_temperature", "t2m", "instantaneous", "K", "Temperatura a 2 m",
+        store_offset=-KELVIN_AT_ZERO_CELSIUS,
+    ),
+    VariableSpec(
+        "2m_dewpoint_temperature", "d2m", "instantaneous", "K", "Punto di rugiada a 2 m",
+        store_offset=-KELVIN_AT_ZERO_CELSIUS,
     ),
     VariableSpec(
         "mean_sea_level_pressure", "msl", "instantaneous", "Pa", "Pressione al livello del mare"
@@ -71,9 +92,13 @@ _SPECS: tuple[VariableSpec, ...] = (
         "high_cloud_cover", "hcc", "instantaneous", "0-1", "Copertura nuvolosa alta",
         non_negative=True,
     ),
-    VariableSpec("skin_temperature", "skt", "instantaneous", "K", "Temperatura della superficie"),
     VariableSpec(
-        "soil_temperature_level_1", "stl1", "instantaneous", "K", "Temperatura suolo livello 1"
+        "skin_temperature", "skt", "instantaneous", "K", "Temperatura della superficie",
+        store_offset=-KELVIN_AT_ZERO_CELSIUS,
+    ),
+    VariableSpec(
+        "soil_temperature_level_1", "stl1", "instantaneous", "K",
+        "Temperatura suolo livello 1", store_offset=-KELVIN_AT_ZERO_CELSIUS,
     ),
     VariableSpec(
         "total_column_water_vapour", "tcwv", "instantaneous", "kg m-2",

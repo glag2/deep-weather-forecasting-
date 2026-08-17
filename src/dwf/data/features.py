@@ -246,6 +246,31 @@ def transform_of(variable: str) -> tuple[str, float]:
     return spec.transform, spec.transform_scale
 
 
+def store_offset_of(variable: str) -> float:
+    """Scarto dichiarato fra unita' di archiviazione e unita' di lavoro."""
+    if variable == WIND_SPEED:
+        return 0.0
+    try:
+        spec = spec_by_short_name(variable)
+    except (KeyError, ValueError):
+        return 0.0
+    return spec.store_offset
+
+
+def to_working_units(variable: str, values: np.ndarray) -> np.ndarray:
+    """Converte i dati grezzi dello store nell'unita' usata dalla pipeline.
+
+    Va applicata **una sola volta**, subito dopo la lettura. Concentrare qui la
+    conversione fa si' che normalizzazione, target, metriche e previsioni parlino tutti
+    la stessa unita', e che `normalize` e `denormalize` restino l'una l'inversa
+    dell'altra: convertire piu' avanti le renderebbe asimmetriche.
+    """
+    offset = store_offset_of(variable)
+    if offset == 0.0:
+        return values
+    return (np.asarray(values, dtype=np.float32) + np.float32(offset)).astype(np.float32)
+
+
 @dataclass(frozen=True, slots=True)
 class NormStats:
     """Media e deviazione standard per variabile, con la trasformazione usata."""
@@ -428,7 +453,9 @@ class SlotReader:
                     f"Variabile assente dallo store: {nome!r}. "
                     f"Disponibili: {sorted(self._arrays)}"
                 )
-            letti[nome] = np.asarray(self._arrays[nome][indici], dtype=np.float32)
+            letti[nome] = to_working_units(
+                nome, np.asarray(self._arrays[nome][indici], dtype=np.float32)
+            )
         return letti
 
 
@@ -544,6 +571,8 @@ __all__ = [
     "build_input_tensor",
     "compute_norm_stats",
     "latitude_channels",
+    "store_offset_of",
+    "to_working_units",
     "transform_of",
     "wind_speed",
 ]
