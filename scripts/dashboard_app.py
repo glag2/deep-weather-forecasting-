@@ -1,4 +1,4 @@
-﻿"""Dashboard di ispezione del progetto.
+"""Dashboard di ispezione del progetto.
 
 Avvio:
 
@@ -26,6 +26,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from dwf import runs  # noqa: E402
 from dwf.climate import (  # noqa: E402
     ANNI_MINIMI_PER_TENDENZA,
     ciclo_stagionale,
@@ -41,11 +42,14 @@ from dwf.climate import (  # noqa: E402
 from dwf.config import Config  # noqa: E402
 from dwf.dashboard import (  # noqa: E402
     TECNOLOGIE,
+    catalogo_ingressi,
     coerenza_artefatti,
     confronto_visivo,
     copertura_mensile,
     curva_apprendimento,
     informazioni_modello,
+    ispeziona_ingresso,
+    ispeziona_uscite,
     mappa_errori,
     metriche,
     panoramica,
@@ -55,6 +59,8 @@ from dwf.dashboard import (  # noqa: E402
     spazio_dati,
     struttura_fold,
 )
+from dwf.models import variants  # noqa: E402
+from dwf.runs import RunError  # noqa: E402
 
 st.set_page_config(page_title="Deep Weather Forecasting", layout="wide")
 
@@ -99,6 +105,24 @@ def estremi_in_cache(percorso: str):
     return indici_estremi(carica_config(percorso))
 
 
+@st.cache_data(show_spinner="Ricostruzione della finestra di ingresso...")
+def ingresso_in_cache(percorso: str, fold: int, split: str, posizione: int, canale: int):
+    ispezione = ispeziona_ingresso(
+        carica_config(percorso), fold, split=split, posizione=posizione, canale=canale
+    )
+    return (
+        ispezione.nome, ispezione.gruppo, ispezione.variabile, ispezione.ritardo,
+        ispezione.campo, ispezione.unita, ispezione.avvertenza,
+    )
+
+
+@st.cache_data(show_spinner="Esecuzione del modello su tutte le scadenze...")
+def uscite_in_cache(percorso: str, fold: int, split: str, posizione: int, variabile: str):
+    return ispeziona_uscite(
+        carica_config(percorso), fold, split=split, posizione=posizione, variabile=variabile
+    )
+
+
 def mappa(asse, campo: np.ndarray, config: Config, *, titolo: str, cmap: str,
           vmin=None, vmax=None):
     """Disegna un campo con gli estremi geografici corretti.
@@ -139,7 +163,7 @@ fold = st.sidebar.number_input("Fold", min_value=0, max_value=20, value=0, step=
 sezione = st.sidebar.radio(
     "Sezione",
     ["Panoramica", "Dati", "Modello", "Prestazioni", "Confronto visivo",
-     "Mappa degli errori", "Clima", "Risorse"],
+     "Mappa degli errori", "Clima", "Addestramento", "Risorse"],
 )
 st.sidebar.caption(
     "Il confronto visivo e la mappa degli errori usano il blocco di **test**, "
@@ -559,6 +583,289 @@ elif sezione == "Clima":
         st.info("Nessun dato per gli indici.")
     else:
         st.dataframe(estremi, width="stretch", hide_index=True)
+
+
+# --------------------------------------------------------------------------- #
+# Addestramento
+# --------------------------------------------------------------------------- #
+
+elif sezione == "Addestramento":
+    st.header("Addestramento")
+    st.caption(
+        "Da qui si vede che cosa entra nella rete, che cosa ne esce, e si avviano "
+        "esecuzioni con parametri diversi. Ogni esecuzione e' un **processo separato** "
+        "con la sua cartella: sopravvive alla chiusura di questa pagina e resta "
+        "ripetibile da terminale con la configurazione che trova salvata dentro."
+    )
+
+    ingressi, uscite, nuova, corso = st.tabs(
+        ["Ingressi", "Uscite", "Nuova esecuzione", "Esecuzioni"]
+    )
+
+    # ---------------------------------------------------------------- ingressi
+    with ingressi:
+        catalogo = catalogo_ingressi(config)
+        st.subheader(f"{catalogo.height} canali di ingresso")
+        conteggi = catalogo["group"].value_counts().sort("count", descending=True)
+        st.dataframe(conteggi, hide_index=True, width="stretch")
+        st.caption(
+            "Ogni canale e' un campo sull'intera griglia. Lo **stato** e' la variabile a "
+            "un dato ritardo, la **tendenza** e' la differenza fra due istanti, i canali "
+            "statici e temporali non dipendono dalla finestra."
+        )
+
+        with st.expander("Elenco completo dei canali"):
+            filtro = st.multiselect(
+                "Gruppi", sorted(catalogo["group"].unique().to_list()), default=[]
+            )
+            mostrato = catalogo.filter(catalogo["group"].is_in(filtro)) if filtro else catalogo
+            st.dataframe(mostrato, hide_index=True, width="stretch", height=300)
+
+        st.subheader("Un canale sulla griglia")
+        colonne = st.columns(3)
+        split_ingresso = colonne[0].selectbox("Blocco", ["test", "val", "train"], index=0)
+        posizione_ingresso = colonne[1].number_input(
+            "Finestra", min_value=0, max_value=200, value=0, step=1, key="finestra_ingresso"
+        )
+        canale_scelto = colonne[2].selectbox(
+            "Canale",
+            list(range(catalogo.height)),
+            format_func=lambda i: f"{i} - {catalogo['name'][i]}",
+        )
+
+        # Il risultato non puo' dipendere dal valore *transitorio* del pulsante: alla
+        # prima riesecuzione della pagina, provocata da qualsiasi altro widget, il
+        # pulsante torna falso e il campo appena calcolato sparirebbe senza spiegazione.
+        if st.button("Mostra il canale", key="mostra_canale"):
+            st.session_state["canale_richiesto"] = True
+        if st.session_state.get("canale_richiesto"):
+            try:
+                nome, gruppo, variabile, ritardo, campo, unita, avvertenza = ingresso_in_cache(
+                    percorso_config, int(fold), split_ingresso,
+                    int(posizione_ingresso), int(canale_scelto),
+                )
+            except Exception as errore:
+                st.error(f"Canale non ispezionabile: {errore}")
+            else:
+                st.markdown(
+                    f"**{nome}** - gruppo *{gruppo}*, variabile `{variabile}`, "
+                    f"ritardo {ritardo} slot, unita' **{unita}**"
+                )
+                if avvertenza:
+                    st.warning(avvertenza)
+                figura, asse = plt.subplots(figsize=(7, 5))
+                immagine = mappa(
+                    asse, campo, config,
+                    titolo=f"{nome} [{unita}]",
+                    cmap="RdBu_r" if gruppo == "tendency" else "viridis",
+                )
+                figura.colorbar(immagine, ax=asse, shrink=0.8)
+                st.pyplot(figura)
+                plt.close(figura)
+                riepilogo = {
+                    "minimo": float(np.min(campo)), "medio": float(np.mean(campo)),
+                    "massimo": float(np.max(campo)),
+                }
+                colonne_r = st.columns(3)
+                for colonna, (etichetta, valore) in zip(
+                    colonne_r, riepilogo.items(), strict=False
+                ):
+                    colonna.metric(etichetta, f"{valore:.2f} {unita}")
+                st.caption(
+                    "Il campo e' quello che la rete riceve davvero, ricostruito con la "
+                    "stessa pipeline e riportato indietro alle unita' di partenza."
+                )
+
+    # ------------------------------------------------------------------ uscite
+    with uscite:
+        st.subheader("Tutte e nove le scadenze")
+        st.caption(
+            "Una scadenza sola nasconde il difetto piu' comune di un modello ancorato: "
+            "errore piccolo sulla prima e crescente sulle successive."
+        )
+        colonne = st.columns(3)
+        split_uscita = colonne[0].selectbox(
+            "Blocco", ["test", "val", "train"], index=0, key="split_uscita"
+        )
+        posizione_uscita = colonne[1].number_input(
+            "Finestra", min_value=0, max_value=200, value=0, step=1, key="finestra_uscita"
+        )
+        variabile_uscita = colonne[2].selectbox("Variabile", ["t2m"], index=0)
+
+        if st.button("Esegui il modello", key="esegui_uscite"):
+            st.session_state["uscite_richieste"] = True
+        if st.session_state.get("uscite_richieste"):
+            try:
+                tabella = uscite_in_cache(
+                    percorso_config, int(fold), split_uscita,
+                    int(posizione_uscita), variabile_uscita,
+                )
+            except Exception as errore:
+                st.error(f"Esecuzione non riuscita: {errore}")
+            else:
+                st.dataframe(tabella, hide_index=True, width="stretch")
+                figura, asse = plt.subplots(figsize=(8, 3.5))
+                asse.plot(
+                    tabella["scadenza"], tabella["radice_errore_quadratico"],
+                    marker="o", label="RMSE",
+                )
+                asse.plot(
+                    tabella["scadenza"], tabella["errore_assoluto"],
+                    marker="s", label="errore assoluto medio",
+                )
+                asse.axhline(0.0, color="grey", linewidth=0.6)
+                asse.set_xlabel("scadenza (slot di 6 o 12 ore)")
+                asse.set_ylabel("degC")
+                asse.legend(fontsize=8)
+                asse.grid(alpha=0.3)
+                st.pyplot(figura)
+                plt.close(figura)
+                st.caption(
+                    "Le medie sono spaziali sull'intero dominio: un errore medio vicino a "
+                    "zero con un errore assoluto grande significa che gli errori si "
+                    "compensano fra regioni, non che la previsione sia buona."
+                )
+
+    # -------------------------------------------------------- nuova esecuzione
+    with nuova:
+        st.subheader("Avvia un addestramento")
+        st.caption(
+            "I parametri passano per lo **stesso schema** che valida la configurazione "
+            "del progetto: un valore fuori intervallo viene rifiutato qui, prima che il "
+            "processo parta, non a meta' addestramento."
+        )
+
+        # Il nome predefinito va generato **una volta**: rigenerarlo a ogni riesecuzione
+        # sovrascriverebbe quello appena digitato non appena si tocca un altro campo.
+        if "nome_predefinito" not in st.session_state:
+            st.session_state["nome_predefinito"] = runs.nome_proposto()
+        nome_esecuzione = st.text_input("Nome", st.session_state["nome_predefinito"])
+        colonne = st.columns(4)
+        epoche = colonne[0].number_input(
+            "Epoche", min_value=1, max_value=200, value=int(config.training.epochs)
+        )
+        passo = colonne[1].number_input(
+            "Passo di apprendimento", min_value=1e-6, max_value=1e-1,
+            value=float(config.training.learning_rate), format="%.5f",
+        )
+        lotto = colonne[2].number_input(
+            "Dimensione del lotto", min_value=1, max_value=64,
+            value=int(config.training.batch_size),
+        )
+        ritaglio = colonne[3].number_input(
+            "Lato del ritaglio", min_value=32, max_value=256,
+            value=int(config.training.crop_size), step=16,
+        )
+
+        colonne = st.columns(4)
+        campioni = colonne[0].number_input(
+            "Campioni per epoca", min_value=8, max_value=8192,
+            value=int(config.training.samples_per_epoch), step=8,
+        )
+        seme = colonne[1].number_input(
+            "Seme", min_value=0, max_value=10**6, value=int(config.training.seed)
+        )
+        variante = colonne[2].selectbox(
+            "Variante",
+            sorted(variants.available()),
+            index=sorted(variants.available()).index(config.model.variant),
+        )
+        ancoraggio = colonne[3].checkbox(
+            "Ancoraggio diurno", value=bool(config.model.anchor_diurnal)
+        )
+        if not ancoraggio:
+            st.warning(
+                "Senza ancoraggio il banco misura 6.61 degC contro 3.65: e' la scelta "
+                "con l'effetto piu' grande di tutte quelle provate."
+            )
+
+        st.markdown("**Pesi della perdita**")
+        pesi_attuali = config.training.loss_weights.model_dump()
+        colonne = st.columns(len(pesi_attuali))
+        pesi_scelti = {
+            nome_peso: colonna.number_input(
+                nome_peso, min_value=0.0, max_value=20.0,
+                value=float(valore), step=0.1, key=f"peso_{nome_peso}",
+            )
+            for colonna, (nome_peso, valore) in zip(
+                colonne, pesi_attuali.items(), strict=False
+            )
+        }
+
+        stima = epoche * campioni / max(int(config.training.batch_size), 1)
+        st.caption(
+            f"Circa {int(stima)} passi di ottimizzazione. Sul portatile usato per lo "
+            "sviluppo un'epoca da 512 campioni con ritaglio 96 richiede circa 7 minuti."
+        )
+
+        if st.button("Avvia", type="primary"):
+            parametri = {
+                "epochs": int(epoche), "learning_rate": float(passo),
+                "batch_size": int(lotto), "crop_size": int(ritaglio),
+                "samples_per_epoch": int(campioni), "seed": int(seme),
+                "variant": variante, "anchor_diurnal": bool(ancoraggio),
+                "loss_weights": pesi_scelti,
+            }
+            try:
+                esecuzione = runs.avvia(
+                    config, nome=nome_esecuzione, fold=int(fold),
+                    parametri=parametri, project_root=PROJECT_ROOT,
+                )
+            except (RunError, ValueError) as errore:
+                st.error(f"Non avviata: {errore}")
+            else:
+                st.success(
+                    f"Avviata **{esecuzione.nome}** (processo {esecuzione.pid}). "
+                    "Segui l'andamento nella scheda Esecuzioni."
+                )
+
+    # ------------------------------------------------------------- esecuzioni
+    with corso:
+        st.subheader("Esecuzioni")
+        elenco = runs.elenca(config)
+        if not elenco:
+            st.info("Nessuna esecuzione avviata da questa pagina.")
+        else:
+            st.dataframe(runs.confronto(config), hide_index=True, width="stretch")
+
+            scelta = st.selectbox("Dettaglio", [e.nome for e in elenco])
+            dettaglio = runs.leggi(config, scelta)
+            if dettaglio is not None:
+                colonne = st.columns(4)
+                colonne[0].metric("Stato", dettaglio.stato)
+                colonne[1].metric("Avviata", dettaglio.avviata.strftime("%d/%m %H:%M"))
+                colonne[2].metric("Processo", str(dettaglio.pid or "-"))
+                storia = runs.cronologia(dettaglio, int(dettaglio.parametri.get("fold", 0)))
+                colonne[3].metric("Epoche concluse", str(len(storia)))
+
+                premuto = dettaglio.attiva and st.button("Ferma", key=f"ferma_{scelta}")
+                if premuto and runs.ferma(config, scelta):
+                    st.warning("Richiesta di arresto inviata.")
+                    st.rerun()
+
+                if storia:
+                    figura, asse = plt.subplots(figsize=(8, 3.5))
+                    asse.plot(
+                        [r["epoch"] for r in storia],
+                        [r["train_loss"] for r in storia], marker="o", label="train",
+                    )
+                    asse.plot(
+                        [r["epoch"] for r in storia],
+                        [r["val_loss"] for r in storia], marker="s", label="validazione",
+                    )
+                    asse.set_xlabel("epoca")
+                    asse.set_ylabel("perdita")
+                    asse.legend(fontsize=8)
+                    asse.grid(alpha=0.3)
+                    st.pyplot(figura)
+                    plt.close(figura)
+
+                st.markdown("**Ultime righe del diario**")
+                st.code(runs.coda_del_diario(dettaglio, righe=30) or "(ancora vuoto)")
+                st.caption(f"Comando: `{' '.join(dettaglio.comando)}`")
+
+            if st.button("Aggiorna"):
+                st.rerun()
 
 
 # --------------------------------------------------------------------------- #

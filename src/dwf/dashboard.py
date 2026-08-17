@@ -587,15 +587,212 @@ def spazio_dati(config: Config) -> list[Riquadro]:
     return riquadri
 
 
+# --------------------------------------------------------------------------- #
+# Ispezione di ingressi e uscite
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class CanaleIspezionato:
+    """Un canale di ingresso riportato, dove ha senso, in unita' fisiche."""
+
+    indice: int
+    nome: str
+    gruppo: str
+    variabile: str
+    ritardo: int
+    campo: np.ndarray
+    unita: str
+    avvertenza: str | None = None
+
+
+def catalogo_ingressi(config: Config) -> pl.DataFrame:
+    """L'elenco dei canali di ingresso con provenienza e trattamento.
+
+    Non richiede ne' modello ne' dati: descrive che cosa la configurazione corrente
+    costruirebbe, quindi resta consultabile prima di aver addestrato qualsiasi cosa.
+    """
+    from dwf.data.features import InputLayout
+
+    layout = InputLayout.from_config(config)
+    return pl.DataFrame(layout.describe())
+
+
+def ispeziona_ingresso(
+    config: Config,
+    fold: int,
+    *,
+    split: str = "test",
+    posizione: int = 0,
+    canale: int = 0,
+) -> CanaleIspezionato:
+    """Estrae un canale della finestra di ingresso e lo riporta in unita' leggibili.
+
+    Il campo mostrato e' quello che la rete riceve davvero, ricostruito con la stessa
+    pipeline: non e' una rilettura indipendente dello store, quindi se la costruzione
+    delle feature avesse un difetto, comparirebbe anche qui. E' voluto: serve a vedere
+    l'ingresso del modello, non un'idea di come dovrebbe essere.
+
+    I canali di tendenza sono differenze fra istanti gia' normalizzati. Moltiplicarle
+    per la deviazione standard le riporta alla scala della variabile, ma solo per le
+    variabili a trasformazione identita' il risultato e' una differenza fisica: per la
+    precipitazione, trasformata con log1p, la differenza resta nello spazio trasformato
+    e viene dichiarata come tale.
+    """
+    from dwf.data.dataset import (
+        KEY_FEATURES,
+        WeatherWindowDataset,
+        build_reader,
+        sample_starts,
+    )
+    from dwf.data.features import GROUP_TENDENCY
+    from dwf.train import load_checkpoint
+
+    _, stats, input_layout, _ = load_checkpoint(config, fold)
+    inizi = sample_starts(config, fold, split)
+    if not inizi:
+        raise DashboardError(f"Nessuna finestra nel blocco {split!r} del fold {fold}")
+    posizione = max(0, min(posizione, len(inizi) - 1))
+    canale = max(0, min(canale, input_layout.n_channels - 1))
+
+    dataset = WeatherWindowDataset(
+        config, input_layout, stats, inizi, build_reader(config, input_layout),
+        crop_size=None, crops_per_window=1,
+    )
+    campione = dataset[posizione]
+    valori = campione[KEY_FEATURES].numpy()[canale]
+
+    descrizione = input_layout.describe()[canale]
+    variabile = descrizione["source_variable"]
+    avvertenza: str | None = None
+
+    if not descrizione["normalized"]:
+        campo, unita = valori, "adimensionale"
+    elif descrizione["group"] == GROUP_TENDENCY:
+        # Somma della media: sarebbe sbagliata su una differenza, si applica la sola scala.
+        campo = valori * stats.std[variabile]
+        trasformazione = stats.transform.get(variabile, "identity")
+        unita = f"variazione di {variabile}"
+        if trasformazione != "identity":
+            avvertenza = (
+                f"La variabile usa la trasformazione {trasformazione}: la differenza "
+                "mostrata resta nello spazio trasformato, non in unita' fisiche."
+            )
+    else:
+        campo, unita = stats.denormalize(variabile, valori), _unita_di(variabile)
+
+    return CanaleIspezionato(
+        indice=canale,
+        nome=descrizione["name"],
+        gruppo=descrizione["group"],
+        variabile=variabile,
+        ritardo=int(descrizione["lag"]),
+        campo=np.asarray(campo, dtype=np.float32),
+        unita=unita,
+        avvertenza=avvertenza,
+    )
+
+
+def _unita_di(variabile: str) -> str:
+    """Unita' della variabile **come la usa la pipeline**, non come sta nel GRIB.
+
+    La specifica dichiara l'unita' di origine: la temperatura vi risulta in kelvin
+    anche se lo store applica uno scostamento e tutto il progetto lavora in gradi
+    Celsius. Riportare l'etichetta grezza qui vorrebbe dire scrivere "K" accanto a
+    numeri intorno a zero.
+    """
+    from dwf.data.features import store_offset_of
+    from dwf.variables import BY_SHORT_NAME
+
+    spec = BY_SHORT_NAME.get(variabile)
+    if spec is None:
+        return "unita' della variabile"
+    if spec.units == "K" and store_offset_of(variabile) != 0.0:
+        return "degC"
+    return spec.units
+
+
+def ispeziona_uscite(
+    config: Config,
+    fold: int,
+    *,
+    split: str = "test",
+    posizione: int = 0,
+    variabile: str = "t2m",
+) -> pl.DataFrame:
+    """Previsto, osservato e differenza per **tutte** le scadenze di una finestra.
+
+    Una scadenza sola nasconde il difetto piu' comune di un modello ancorato: errore
+    piccolo alla prima scadenza e crescente sulle successive. La tabella le mostra tutte
+    e nove, in modo che la crescita sia visibile invece che da dedurre.
+    """
+    import torch
+
+    from dwf.data.dataset import (
+        KEY_FEATURES,
+        WeatherWindowDataset,
+        build_reader,
+        sample_starts,
+        split_baselines,
+    )
+    from dwf.train import load_checkpoint
+
+    rete, stats, input_layout, output_layout = load_checkpoint(config, fold)
+    inizi = sample_starts(config, fold, split)
+    if not inizi:
+        raise DashboardError(f"Nessuna finestra nel blocco {split!r} del fold {fold}")
+    posizione = max(0, min(posizione, len(inizi) - 1))
+
+    dataset = WeatherWindowDataset(
+        config, input_layout, stats, inizi, build_reader(config, input_layout),
+        crop_size=None, crops_per_window=1,
+    )
+    campione = dataset[posizione]
+    _, riferimenti = split_baselines(campione)
+
+    rete.eval()
+    with torch.no_grad():
+        uscita = output_layout.apply_anchor(
+            rete(campione[KEY_FEATURES].unsqueeze(0)),
+            {nome: valore.unsqueeze(0) for nome, valore in riferimenti.items()},
+        )
+        media = output_layout.select(uscita, variabile, "mean")[0].numpy()
+
+    osservato_tutto = campione[f"target_{variabile}"].numpy()
+    inizio = int(campione["start_slot"])
+    righe = []
+    for scadenza in range(media.shape[0]):
+        previsto = stats.denormalize(variabile, media[scadenza])
+        osservato = stats.denormalize(variabile, osservato_tutto[scadenza])
+        differenza = previsto - osservato
+        istante = _istante_di(config, inizio, scadenza)
+        righe.append(
+            {
+                "scadenza": scadenza,
+                "istante": istante.strftime("%Y-%m-%d %H UTC") if istante else "",
+                "previsto_medio": float(np.mean(previsto)),
+                "osservato_medio": float(np.mean(osservato)),
+                "errore_medio": float(np.mean(differenza)),
+                "errore_assoluto": float(np.mean(np.abs(differenza))),
+                "radice_errore_quadratico": float(np.sqrt(np.mean(differenza**2))),
+            }
+        )
+    return pl.DataFrame(righe)
+
+
 __all__ = [
     "TECNOLOGIE",
+    "CanaleIspezionato",
     "Confronto",
     "DashboardError",
     "Riquadro",
+    "catalogo_ingressi",
     "confronto_visivo",
     "copertura_mensile",
     "curva_apprendimento",
     "informazioni_modello",
+    "ispeziona_ingresso",
+    "ispeziona_uscite",
     "mappa_errori",
     "metriche",
     "panoramica",

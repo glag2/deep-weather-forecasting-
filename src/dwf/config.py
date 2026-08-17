@@ -14,7 +14,7 @@ from typing import Annotated, Any, Literal, Self
 
 import numpy as np
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from dwf.slots import (
     SplitLayout,
@@ -337,6 +337,24 @@ class ModelConfig(_Base):
     # Nome della variante di blocco da usare nel corpo della rete.
     variant: str = "conv"
 
+    @field_validator("variant")
+    @classmethod
+    def _variante_registrata(cls, valore: str) -> str:
+        """Un nome non registrato fallirebbe solo alla costruzione della rete.
+
+        Con una configurazione modificabile dall'esterno il ritardo conta: l'errore
+        arriverebbe dopo la lettura dei dati e la preparazione delle finestre invece che
+        subito, e senza dire quali nomi esistano.
+        """
+        from dwf.models import variants
+
+        disponibili = variants.available()
+        if valore not in disponibili:
+            raise ValueError(
+                f"Variante sconosciuta: {valore!r}. Disponibili: {sorted(disponibili)}"
+            )
+        return valore
+
 
 class LossWeights(_Base):
     gaussian: Annotated[float, Field(ge=0.0)] = 1.0
@@ -398,6 +416,12 @@ class PathsConfig(_Base):
     # I modelli addestrati stanno fuori da `data_root`, alla radice del progetto: sono
     # il risultato del lavoro, non dati grezzi rigenerabili con un nuovo download.
     models_dir: str = "models"
+
+    # Ramo sotto `models_dir` in cui isolare i checkpoint di una singola esecuzione.
+    # Serve ai banchi di prova: senza di esso ogni prova scriverebbe e rileggerebbe la
+    # stessa cartella, e due esecuzioni contemporanee si sovrascriverebbero il
+    # checkpoint fra addestramento e valutazione.
+    models_subdir: str = ""
 
     # Slot per blocco Zarr. Compromesso misurabile: blocchi grandi riducono il numero
     # di letture ma per un crop piccolo trasferiscono dati inutili, blocchi piccoli
@@ -564,7 +588,16 @@ class Config(_Base):
 
     def fold_dir(self, fold: int) -> Path:
         """Directory del modello di un fold: unica fonte del percorso per tutto il codice."""
-        return self.models_dir / f"fold_{fold:02d}"
+        radice = self.models_dir
+        if self.paths.models_subdir:
+            radice = (radice / self.paths.models_subdir).resolve()
+            # Il ramo arriva da riga di comando: verificare il percorso risolto e' l'unico
+            # controllo che regge, perche' `..` e i collegamenti sono gia' stati espansi.
+            if radice != self.models_dir and self.models_dir not in radice.parents:
+                raise ValueError(
+                    f"models_subdir esce dalla cartella dei modelli: {self.paths.models_subdir!r}"
+                )
+        return radice / f"fold_{fold:02d}"
 
     # --- costruzione ---
 

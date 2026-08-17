@@ -368,3 +368,35 @@ def test_tutti_i_percorsi_restano_sotto_la_radice_dati() -> None:
     config = Config.load(CONFIG_PATH)
     for percorso in (config.raw_dir, config.zarr_path, config.tables_dir, config.static_path):
         assert config.data_root in percorso.parents or percorso == config.data_root
+
+
+def test_le_prove_di_un_banco_non_condividono_la_cartella_del_modello() -> None:
+    """Senza un ramo per esecuzione ogni prova sovrascrive il checkpoint della precedente.
+
+    Il difetto era silenzioso: finche' le prove sono sequenziali e hanno lo stesso numero
+    di canali, ciascuna rilegge quello che ha appena scritto e il risultato sembra
+    corretto. Basta un secondo addestramento in parallelo, o un numero di canali diverso,
+    perche' la valutazione misuri il modello sbagliato.
+    """
+    config = Config.load(CONFIG_PATH)
+    prima = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"models_subdir": "bench/a"})}
+    )
+    seconda = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"models_subdir": "bench/b"})}
+    )
+    assert prima.fold_dir(0) != seconda.fold_dir(0)
+    assert prima.fold_dir(0).parent.name == "a"
+    # Senza ramo il percorso resta quello storico, cosi' i modelli gia' salvati
+    # continuano a essere trovati dove sono.
+    assert config.fold_dir(0) == config.models_dir / "fold_00"
+
+
+def test_il_ramo_di_esecuzione_resta_sotto_la_cartella_dei_modelli() -> None:
+    """Il valore arriva da riga di comando: non deve poter uscire dalla cartella."""
+    config = Config.load(CONFIG_PATH)
+    fuori = config.model_copy(
+        update={"paths": config.paths.model_copy(update={"models_subdir": "../../fuga"})}
+    )
+    with pytest.raises(ValueError, match="models_subdir"):
+        fuori.fold_dir(0)

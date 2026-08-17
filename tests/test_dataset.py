@@ -336,3 +336,87 @@ def test_semi_diversi_danno_ordini_diversi() -> None:
     primo = list(WindowBatchSampler(n_windows=30, crops_per_window=1, batch_size=1, seed=1))
     secondo = list(WindowBatchSampler(n_windows=30, crops_per_window=1, batch_size=1, seed=2))
     assert primo != secondo
+
+
+# --------------------------------------------------------------------------- #
+# Inizi di campione contro slot realmente presenti
+# --------------------------------------------------------------------------- #
+
+
+def _scrivi_catalogo(config: Config, utilizzabili: list[bool]) -> None:
+    """Catalogo minimo con la sola colonna che conta per l'ammissibilita'."""
+    import polars as pl
+
+    from dwf.tables import FOLDS, SLOTS, cast_to_schema, write_table
+
+    n = len(utilizzabili)
+    istante = datetime(2024, 1, 1, tzinfo=UTC)
+    slots = pl.DataFrame(
+        {
+            "slot_index": list(range(n)),
+            "valid_time": [istante + timedelta(hours=6 * i) for i in range(n)],
+            "year": [2024] * n,
+            "month": [1] * n,
+            "day": [1] * n,
+            "hour": [6] * n,
+            "slot_of_day": [0] * n,
+            "day_of_year": [1] * n,
+            "source_month": ["2024-01"] * n,
+            "split": ["train"] * n,
+            "usable": utilizzabili,
+        }
+    )
+    write_table(cast_to_schema(slots, SLOTS), SLOTS, config.tables_dir)
+
+    folds = pl.DataFrame(
+        {
+            "fold": [0] * n,
+            "split": ["train"] * n,
+            "slot_index": list(range(n)),
+            "is_sample_start": [True] * n,
+        }
+    )
+    write_table(cast_to_schema(folds, FOLDS), FOLDS, config.tables_dir)
+
+
+def test_gli_inizi_escludono_le_finestre_che_toccano_slot_mancanti(config: Config) -> None:
+    """Il difetto reale: `folds.parquet` congela la finestra di quando e' stato scritto.
+
+    Allungando la finestra dopo l'ingestione, gli inizi marcati validi restano validi
+    nel file ma le loro finestre sporgono su slot mai scaricati. Non arriva alcun
+    errore: arrivano NaN, che attraversano normalizzazione e perdita e si manifestano
+    molto piu' tardi come un checkpoint mancante.
+    """
+    from dwf.data.dataset import sample_starts
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    # Venti slot presenti, poi il vuoto: e' la forma reale dello store, che copre due
+    # intervalli di mesi non adiacenti.
+    _scrivi_catalogo(config, [True] * 20 + [False] * 10)
+
+    corta = config.model_copy(
+        update={"windows": config.windows.model_copy(update={"input_slots": 3, "output_slots": 2})}
+    )
+    lunga = config.model_copy(
+        update={"windows": config.windows.model_copy(update={"input_slots": 12, "output_slots": 2})}
+    )
+
+    inizi_corti = sample_starts(corta, 0, "train")
+    inizi_lunghi = sample_starts(lunga, 0, "train")
+
+    # Con finestra 5 l'ultimo inizio ammesso e' 15, perche' 15+5 = 20.
+    assert max(inizi_corti) == 15
+    # Con finestra 14 l'ultimo e' 6. Se il filtro non ci fosse, resterebbe 15 anche qui.
+    assert max(inizi_lunghi) == 6
+    assert 15 not in inizi_lunghi
+
+
+def test_nessun_inizio_ammesso_se_la_finestra_supera_i_dati(config: Config) -> None:
+    from dwf.data.dataset import sample_starts
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_catalogo(config, [True] * 8)
+    enorme = config.model_copy(
+        update={"windows": config.windows.model_copy(update={"input_slots": 40, "output_slots": 9})}
+    )
+    assert sample_starts(enorme, 0, "train") == []

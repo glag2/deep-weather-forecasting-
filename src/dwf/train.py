@@ -10,6 +10,7 @@ prevedere, ma la memoria dei dati gia' visti.
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -279,6 +280,19 @@ def train_fold(
                 components=componenti,
             )
         )
+
+        # Una perdita non finita non migliora mai il minimo corrente, quindi senza
+        # questo controllo l'addestramento arriverebbe in fondo, non salverebbe alcun
+        # checkpoint e non direbbe perche': il difetto si manifesterebbe molto piu'
+        # tardi, come un file mancante durante la valutazione.
+        if not math.isfinite(perdita_val) or not math.isfinite(perdita_train):
+            raise TrainingError(
+                f"Perdita non finita all'epoca {epoca} "
+                f"(train {perdita_train}, validazione {perdita_val}): "
+                "l'addestramento non puo' proseguire. Cause tipiche sono slot mancanti "
+                "dentro la finestra, statistiche di normalizzazione degeneri o un passo "
+                "di apprendimento troppo grande."
+            )
 
         if perdita_val < migliore:
             migliore = perdita_val
