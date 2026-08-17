@@ -193,7 +193,7 @@ def main() -> None:
         metriche.filter(
             (pl.col("lead_slot") >= 0)
             & (pl.col("month") == -1)
-            & (pl.col("metric").is_in(["rmse_kelvin", "f1", "brier_skill_score"]))
+            & (pl.col("metric").is_in(["rmse_celsius", "f1", "brier_skill_score"]))
         )
         .pivot(on="model", index=["variable", "metric", "lead_slot"], values="value")
         .sort("variable", "metric", "lead_slot")

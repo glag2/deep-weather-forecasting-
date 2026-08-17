@@ -355,7 +355,7 @@ def metrics_table(
         if not selezione.any():
             return
         errore_norm = prediction.t2m_mean[selezione] - prediction.t2m_target[selezione]
-        # L'errore in kelvin e' quello leggibile: la deviazione standard di train
+        # L'errore in gradi e' quello leggibile: la deviazione standard di train
         # riporta il residuo normalizzato nelle unita' della variabile.
         scala = stats.std.get("t2m", 1.0)
         rmse = float(np.sqrt(np.mean(errore_norm**2)) * scala)
@@ -376,7 +376,7 @@ def metrics_table(
                 "variable": "t2m",
                 "lead_slot": -1 if scadenza is None else scadenza,
                 "month": -1 if mese is None else mese,
-                "metric": "rmse_kelvin",
+                "metric": "rmse_celsius",
                 "value": rmse,
                 "n_values": int(selezione.sum()),
             }
@@ -386,7 +386,7 @@ def metrics_table(
                 "model": model, "split": split, "fold": fold, "variable": "t2m",
                 "lead_slot": -1 if scadenza is None else scadenza,
                 "month": -1 if mese is None else mese,
-                "metric": "mae_kelvin", "value": mae, "n_values": int(selezione.sum()),
+                "metric": "mae_celsius", "value": mae, "n_values": int(selezione.sum()),
             }
         )
         righe.append(

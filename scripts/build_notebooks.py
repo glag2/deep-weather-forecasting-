@@ -218,7 +218,7 @@ confronto = (
 confronto
 """),
         code("""
-rmse = confronto.filter((pl.col("variable") == "t2m") & (pl.col("metric") == "rmse_kelvin"))
+rmse = confronto.filter((pl.col("variable") == "t2m") & (pl.col("metric") == "rmse_celsius"))
 plt.figure(figsize=(7, 4))
 plt.plot(rmse["lead_slot"], rmse["dwf"], marker="o", label="modello")
 plt.plot(rmse["lead_slot"], rmse["persistence"], marker="s", label="persistenza")
@@ -390,7 +390,7 @@ SCADENZE = [0, 4, 8]  # primo giorno, secondo, terzo
 figura, assi = plt.subplots(len(SCADENZE), 3, figsize=(15, 4 * len(SCADENZE)))
 for riga, scadenza in enumerate(SCADENZE):
     istante = previsione.valid_times[scadenza]
-    mappa(assi[riga, 0], previsione.t2m_mean[scadenza] - 273.15,
+    mappa(assi[riga, 0], previsione.t2m_mean[scadenza],
           f"Temperatura [C] - {istante:%d/%m %H UTC}", "RdBu_r")
     mappa(assi[riga, 1], previsione.precip_probability[scadenza],
           f"Probabilita' di pioggia - {istante:%d/%m %H UTC}", "Blues", 0, 1)
@@ -424,7 +424,7 @@ import polars as pl
 
 pl.DataFrame({
     "istante": list(previsione.valid_times),
-    "temperatura_C": [float(previsione.t2m_mean[s, riga, colonna] - 273.15)
+    "temperatura_C": [float(previsione.t2m_mean[s, riga, colonna])
                       for s in range(previsione.n_lead)],
     "incertezza_K": [float(previsione.t2m_std[s, riga, colonna])
                      for s in range(previsione.n_lead)],

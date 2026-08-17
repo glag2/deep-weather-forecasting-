@@ -378,7 +378,8 @@ def test_il_riepilogo_ha_una_riga_per_scadenza(
 def test_il_riepilogo_riporta_i_gradi_celsius(
     config: Config, layout: InputLayout, output_layout: OutputLayout
 ) -> None:
+    # La conversione avviene una sola volta, in lettura: qui la previsione e' gia' in
+    # gradi Celsius e sottrarre ancora sarebbe una doppia conversione.
     previsione = prevedi(config, layout, output_layout, valore=0.0)
     riepilogo = summarize(previsione)
-    atteso = 5.0 - 273.15
-    assert riepilogo.get_column("t2m_mean_celsius").to_numpy() == pytest.approx(atteso)
+    assert riepilogo.get_column("t2m_mean_celsius").to_numpy() == pytest.approx(5.0)

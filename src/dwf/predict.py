@@ -1,7 +1,7 @@
 """Inferenza sul dominio intero e conversione in unita' fisiche.
 
 La rete lavora su valori normalizzati e su parametri di distribuzioni; qui vengono
-riportati a cio' che un utente legge: gradi kelvin, probabilita' di pioggia,
+riportati a cio' che un utente legge: gradi Celsius, probabilita' di pioggia,
 millimetri attesi, probabilita' che quella precipitazione sia neve.
 
 Nota sulla natura della previsione. ERA5 pubblica con circa sei giorni di ritardo,
@@ -207,8 +207,8 @@ def summarize(forecast: Forecast) -> pl.DataFrame:
             {
                 "lead_slot": scadenza,
                 "valid_time": istante,
-                "t2m_mean_celsius": float(forecast.t2m_mean[scadenza].mean() - 273.15),
-                "t2m_std_kelvin": float(forecast.t2m_std[scadenza].mean()),
+                "t2m_mean_celsius": float(forecast.t2m_mean[scadenza].mean()),
+                "t2m_std_celsius": float(forecast.t2m_std[scadenza].mean()),
                 "precip_probability_mean": float(
                     forecast.precip_probability[scadenza].mean()
                 ),

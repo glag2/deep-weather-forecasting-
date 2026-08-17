@@ -30,6 +30,8 @@ from dwf.data.features import (
     compute_norm_stats,
     invert_transform,
     latitude_channels,
+    store_offset_of,
+    to_working_units,
     transform_of,
     wind_speed,
 )
@@ -202,17 +204,19 @@ def test_normalizzare_una_variabile_ignota_fallisce_esplicitamente() -> None:
 
 def test_le_statistiche_usano_solo_gli_slot_indicati() -> None:
     """E' questa restrizione a impedire che il futuro entri nella normalizzazione."""
+    # `msl` non ha conversione di unita': cosi' il test misura la selezione degli slot
+    # e non resta legato alla scala di una variabile particolare.
     valori = np.zeros((10, 2, 2), dtype=np.float32)
     valori[5:] = 100.0
-    stats = compute_norm_stats(SlotReader({"t2m": valori}), ["t2m"], list(range(5)))
-    assert stats.mean["t2m"] == 0.0
+    stats = compute_norm_stats(SlotReader({"msl": valori}), ["msl"], list(range(5)))
+    assert stats.mean["msl"] == 0.0
 
 
 def test_le_statistiche_su_tutti_gli_slot_differiscono() -> None:
     valori = np.zeros((10, 2, 2), dtype=np.float32)
     valori[5:] = 100.0
-    stats = compute_norm_stats(SlotReader({"t2m": valori}), ["t2m"], list(range(10)))
-    assert stats.mean["t2m"] == pytest.approx(50.0)
+    stats = compute_norm_stats(SlotReader({"msl": valori}), ["msl"], list(range(10)))
+    assert stats.mean["msl"] == pytest.approx(50.0)
 
 
 def test_una_variabile_costante_non_divide_per_zero() -> None:
@@ -346,3 +350,92 @@ def test_i_gruppi_presenti_sono_quelli_attesi(layout: InputLayout) -> None:
     assert gruppi == {
         GROUP_STATE, GROUP_TENDENCY, GROUP_WIND, GROUP_STATIC, "latitude", GROUP_TIME
     }
+
+# --------------------------------------------------------------------------- #
+# Conversione di unita' in lettura
+# --------------------------------------------------------------------------- #
+
+ZERO_CELSIUS_IN_KELVIN = 273.15
+
+
+class TestConversioneInCelsius:
+    """La conversione avviene una volta sola, subito dopo la lettura.
+
+    E' quel punto unico a garantire che normalizzazione, target, metriche e previsioni
+    parlino tutti la stessa unita', e che `normalize` e `denormalize` restino l'una
+    l'inversa dell'altra.
+    """
+
+    def test_le_temperature_dichiarano_lo_scarto(self) -> None:
+        assert store_offset_of("t2m") == pytest.approx(-ZERO_CELSIUS_IN_KELVIN)
+        assert store_offset_of("d2m") == pytest.approx(-ZERO_CELSIUS_IN_KELVIN)
+
+    def test_le_altre_variabili_non_hanno_scarto(self) -> None:
+        for nome in ("msl", "tp", "sf", "u10", "v10", "tcc", "sd", "lsm", "z"):
+            assert store_offset_of(nome) == 0.0, nome
+
+    def test_la_velocita_del_vento_derivata_non_ha_scarto(self) -> None:
+        assert store_offset_of(WIND_SPEED) == 0.0
+
+    def test_una_variabile_sconosciuta_non_viene_traslata(self) -> None:
+        assert store_offset_of("variabile_inventata") == 0.0
+
+    def test_il_punto_di_congelamento_diventa_zero(self) -> None:
+        convertiti = to_working_units("t2m", np.array([ZERO_CELSIUS_IN_KELVIN]))
+        assert float(convertiti[0]) == pytest.approx(0.0, abs=1e-3)
+
+    def test_una_temperatura_tipica_diventa_leggibile(self) -> None:
+        convertiti = to_working_units("t2m", np.array([293.15]))
+        assert float(convertiti[0]) == pytest.approx(20.0, abs=1e-3)
+
+    def test_la_pressione_resta_invariata(self) -> None:
+        valori = np.array([101325.0])
+        assert to_working_units("msl", valori)[0] == pytest.approx(101325.0)
+
+    def test_la_conversione_conserva_forma_e_tipo(self) -> None:
+        valori = np.full((3, 4, 5), 280.0, dtype=np.float32)
+        convertiti = to_working_units("t2m", valori)
+        assert convertiti.shape == valori.shape
+        assert convertiti.dtype == np.float32
+
+    def test_il_lettore_applica_la_conversione(self) -> None:
+        valori = np.full((4, 2, 2), 283.15, dtype=np.float32)
+        letti = SlotReader({"t2m": valori}).read_slots([0, 1], ["t2m"])
+        assert np.allclose(letti["t2m"], 10.0, atol=1e-3)
+
+    def test_il_lettore_non_converte_le_altre_variabili(self) -> None:
+        valori = np.full((4, 2, 2), 101325.0, dtype=np.float32)
+        letti = SlotReader({"msl": valori}).read_slots([0], ["msl"])
+        assert np.allclose(letti["msl"], 101325.0)
+
+    def test_le_statistiche_risultano_in_gradi_leggibili(self) -> None:
+        # Media di 283,15 K: in Celsius deve valere 10, non 283.
+        valori = np.full((6, 2, 2), 283.15, dtype=np.float32)
+        stats = compute_norm_stats(SlotReader({"t2m": valori}), ["t2m"], list(range(6)))
+        assert stats.mean["t2m"] == pytest.approx(10.0, abs=1e-2)
+
+    def test_normalizzazione_e_denormalizzazione_restano_inverse(self) -> None:
+        # E' la proprieta' che si romperebbe convertendo piu' a valle invece che in
+        # lettura: le due funzioni lavorerebbero in unita' diverse.
+        stats = NormStats(
+            {"t2m": 10.0}, {"t2m": 5.0}, {"t2m": "identity"}, {"t2m": 1.0}, "train"
+        )
+        gradi = np.array([-15.0, 0.0, 12.5, 33.0], dtype=np.float32)
+        assert np.allclose(stats.denormalize("t2m", stats.normalize("t2m", gradi)), gradi)
+
+    def test_traslare_la_media_lascia_invariata_la_normalizzazione(self) -> None:
+        # Giustifica la correzione applicata al checkpoint gia' addestrato: spostare
+        # dato e media della stessa quantita' non cambia il valore normalizzato.
+        kelvin = np.array([270.0, 280.0, 290.0], dtype=np.float32)
+        in_kelvin = NormStats(
+            {"t2m": 280.0}, {"t2m": 8.0}, {"t2m": "identity"}, {"t2m": 1.0}, "train"
+        )
+        in_celsius = NormStats(
+            {"t2m": 280.0 - ZERO_CELSIUS_IN_KELVIN}, {"t2m": 8.0},
+            {"t2m": "identity"}, {"t2m": 1.0}, "train",
+        )
+        assert np.allclose(
+            in_kelvin.normalize("t2m", kelvin),
+            in_celsius.normalize("t2m", to_working_units("t2m", kelvin)),
+            atol=1e-5,
+        )
