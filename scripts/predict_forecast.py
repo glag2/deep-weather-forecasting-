@@ -26,7 +26,7 @@ from dwf.predict import (
     summarize,
 )
 from dwf.tables import FORECAST, SLOTS, read_table, write_table
-from dwf.train import load_checkpoint
+from dwf.train import fold_dir, load_checkpoint
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,7 +80,7 @@ def main() -> None:
 
     if args.save_table:
         tabella = forecast_to_table(previsione, stride=args.stride)
-        destinazione = config.artifacts_dir / f"fold_{args.fold:02d}"
+        destinazione = fold_dir(config, args.fold)
         destinazione.mkdir(parents=True, exist_ok=True)
         percorso = write_table(tabella, FORECAST, destinazione)
         print(f"\nprevisione salvata: {percorso} ({tabella.height:,} righe)")

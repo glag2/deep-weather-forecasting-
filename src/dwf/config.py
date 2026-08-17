@@ -370,6 +370,10 @@ class PathsConfig(_Base):
     tables_subdir: str = "tables"
     artifacts_subdir: str = "artifacts"
 
+    # I modelli addestrati stanno fuori da `data_root`, alla radice del progetto: sono
+    # il risultato del lavoro, non dati grezzi rigenerabili con un nuovo download.
+    models_dir: str = "models"
+
     # Slot per blocco Zarr. Compromesso misurabile: blocchi grandi riducono il numero
     # di letture ma per un crop piccolo trasferiscono dati inutili, blocchi piccoli
     # fanno il contrario. Lo spazio resta non suddiviso perche' l'inferenza legge
@@ -524,6 +528,18 @@ class Config(_Base):
     @property
     def artifacts_dir(self) -> Path:
         return self._under_data_root(self.paths.artifacts_subdir)
+
+    @property
+    def models_dir(self) -> Path:
+        """Directory dei modelli addestrati, risolta rispetto alla radice del progetto."""
+        root = Path(self.paths.models_dir).expanduser()
+        if not root.is_absolute():
+            root = self.project_root / root
+        return root.resolve()
+
+    def fold_dir(self, fold: int) -> Path:
+        """Directory del modello di un fold: unica fonte del percorso per tutto il codice."""
+        return self.models_dir / f"fold_{fold:02d}"
 
     # --- costruzione ---
 

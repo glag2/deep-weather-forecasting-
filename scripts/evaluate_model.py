@@ -31,7 +31,7 @@ from dwf.evaluate import (
     reliability_table,
 )
 from dwf.tables import CALIBRATION, METRICS, RELIABILITY, write_table
-from dwf.train import load_checkpoint
+from dwf.train import fold_dir, load_checkpoint
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -173,7 +173,7 @@ def main() -> None:
         model="dwf", split=args.split, fold=args.fold, variable="tp",
     )
 
-    destinazione = config.artifacts_dir / f"fold_{args.fold:02d}"
+    destinazione = fold_dir(config, args.fold)
     destinazione.mkdir(parents=True, exist_ok=True)
     print(f"\nmetriche    : {write_table(metriche, METRICS, destinazione)}")
     print(f"affidabilita: {write_table(affidabilita, RELIABILITY, destinazione)}")

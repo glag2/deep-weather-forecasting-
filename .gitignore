@@ -12,6 +12,11 @@
 *.zarr/
 *.nc
 
+# Pesi dei modelli addestrati: rigenerabili con `scripts/train_model.py` e troppo
+# grandi per la cronologia (circa 39 MB per fold). I metadati restano leggibili
+# accanto ai pesi, non nel repository.
+/models/
+
 # Credenziali CDS: mai committare. La procedura e le variabili richieste sono nel README.
 .cdsapirc
 

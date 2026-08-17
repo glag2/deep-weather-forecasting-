@@ -77,7 +77,7 @@ def load_calibrator(config: Config, fold: int) -> ProbabilityCalibrator | None:
     Assente non e' un errore: un modello appena addestrato non ha ancora una
     calibrazione, e le probabilita' grezze restano utilizzabili, solo meno fedeli.
     """
-    percorso = config.artifacts_dir / f"fold_{fold:02d}" / CALIBRATION.filename
+    percorso = config.fold_dir(fold) / CALIBRATION.filename
     if not percorso.exists():
         return None
     return ProbabilityCalibrator.from_table(read_table(CALIBRATION, percorso.parent))

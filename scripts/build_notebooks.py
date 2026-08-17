@@ -496,7 +496,7 @@ from dwf.predict import forecast_to_table
 from dwf.tables import FORECAST, write_table
 
 tabella = forecast_to_table(previsione, stride=4)
-destinazione = config.artifacts_dir / f"fold_{FOLD:02d}"
+destinazione = fold_dir(config, FOLD)
 destinazione.mkdir(parents=True, exist_ok=True)
 print(write_table(tabella, FORECAST, destinazione), f"({tabella.height:,} righe)")
 """),

@@ -32,12 +32,12 @@ from dwf.data.features import InputLayout, NormStats, SlotReader, compute_norm_s
 from dwf.models.heads import OutputLayout
 from dwf.models.losses import CompositeLoss
 from dwf.models.network import DeepWeatherNet, NetworkSpec
+from dwf.persistence import PersistenceError, load_model, save_model
 from dwf.tables import NORM_STATS, write_table
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
     from dwf.config import Config
 
-CHECKPOINT_NAME = "model.pt"
 HISTORY_NAME = "history.json"
 
 
@@ -66,7 +66,7 @@ class FoldResult:
 
 
 def fold_dir(config: Config, fold: int) -> Path:
-    return config.artifacts_dir / f"fold_{fold:02d}"
+    return config.fold_dir(fold)
 
 
 def build_network(config: Config, layout: OutputLayout, in_channels: int) -> DeepWeatherNet:
@@ -252,7 +252,7 @@ def train_fold(
     cronologia: list[EpochRecord] = []
     migliore = float("inf")
     epoca_migliore = -1
-    checkpoint = destinazione / CHECKPOINT_NAME
+    checkpoint = destinazione
 
     if verbose:
         print(
@@ -282,9 +282,13 @@ def train_fold(
         if perdita_val < migliore:
             migliore = perdita_val
             epoca_migliore = epoca
-            torch.save(
+            save_model(
+                checkpoint,
                 {
-                    "state_dict": network.state_dict(),
+                    nome: valori.detach().cpu().numpy()
+                    for nome, valori in network.state_dict().items()
+                },
+                {
                     "in_channels": input_layout.n_channels,
                     "fold": fold,
                     "epoch": epoca,
@@ -292,7 +296,6 @@ def train_fold(
                     "channels": input_layout.describe(),
                     "outputs": output_layout.describe(),
                 },
-                checkpoint,
             )
 
         if verbose:
@@ -323,23 +326,24 @@ def load_checkpoint(
     from dwf.tables import read_table
 
     destinazione = fold_dir(config, fold)
-    percorso = destinazione / CHECKPOINT_NAME
-    if not percorso.exists():
-        raise TrainingError(f"Checkpoint assente: {percorso}")
-
     input_layout = InputLayout.from_config(config)
     output_layout = OutputLayout.from_targets(config.targets, config.windows.output_slots)
-    salvato = torch.load(percorso, map_location="cpu", weights_only=False)
+    try:
+        pesi, metadati = load_model(destinazione)
+    except PersistenceError as errore:
+        raise TrainingError(str(errore)) from errore
 
-    if salvato["in_channels"] != input_layout.n_channels:
+    if metadati["in_channels"] != input_layout.n_channels:
         raise TrainingError(
-            f"Il checkpoint attende {salvato['in_channels']} canali, la configurazione "
+            f"Il checkpoint attende {metadati['in_channels']} canali, la configurazione "
             f"ne produce {input_layout.n_channels}: configurazione e modello non "
             f"corrispondono"
         )
 
     network = build_network(config, output_layout, input_layout.n_channels)
-    network.load_state_dict(salvato["state_dict"])
+    network.load_state_dict(
+        {nome: torch.from_numpy(valori) for nome, valori in pesi.items()}
+    )
     network.eval()
 
     stats = NormStats.from_table(read_table(NORM_STATS, destinazione))
@@ -347,7 +351,7 @@ def load_checkpoint(
 
 
 __all__ = [
-    "CHECKPOINT_NAME",
+
     "EpochRecord",
     "FoldResult",
     "TrainingError",
