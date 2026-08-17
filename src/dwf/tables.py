@@ -159,6 +159,21 @@ RELIABILITY = TableSpec(
     },
 )
 
+CALIBRATION = TableSpec(
+    filename="calibration.parquet",
+    description="Mappa monotona da probabilita' dichiarata a probabilita' corretta.",
+    schema={
+        "fold": pl.Int16,
+        "variable": pl.String,
+        # Split su cui la mappa e' stata stimata: applicarla allo stesso split su cui
+        # e' nata darebbe un guadagno apparente, quindi va sempre dichiarato.
+        "split": pl.String,
+        "probability_in": pl.Float64,
+        "probability_out": pl.Float64,
+        "n_samples": pl.Int64,
+    },
+)
+
 FORECAST = TableSpec(
     filename="forecast.parquet",
     description="Previsione in forma lunga: un record per punto di griglia e lead time.",
@@ -225,6 +240,7 @@ ALL_SPECS: tuple[TableSpec, ...] = (
     NORM_STATS,
     METRICS,
     RELIABILITY,
+    CALIBRATION,
     FORECAST,
 )
 
