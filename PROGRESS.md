@@ -120,12 +120,16 @@ src/dwf/
   credentials.py          credenziali CDS, senza mai esporne il valore
   tables.py               layer Polars/Parquet con schemi verificati
   data/download.py        richieste CDS per mese e famiglia di variabili
+  data/ingest.py          GRIB -> Zarr + catalogo Parquet
   models/                 rete convoluzionale e teste probabilistiche
 scripts/
   check_cds_access.py     diagnosi di accesso al CDS
   benchmark_model.py      costo del modello su CPU
-tests/                    275 test
-data/                     (ignorato da git) raw GRIB, Zarr, tables, artifacts
+  download_era5.py        scarica i GRIB, con ripresa e manifest
+  ingest_era5.py          ingerisce i mesi disponibili
+tests/                    305 test
+datasets/                 (ignorato da git) raw GRIB, Zarr, tables, artifacts
+INGESTION.md              spiegazione dettagliata della pipeline dati
 ```
 
 ## 4. Cronologia
@@ -177,10 +181,51 @@ Completato:
   all'area, ripresa e scrittura atomica. Collaudato con un client finto: nessun test
   contatta il CDS.
 
-Da fare: `ingest.py` (GRIB -> Zarr), `features.py`, `dataset.py`.
+- `data/ingest.py` + `scripts/ingest_era5.py`: GRIB -> Zarr, catalogo Parquet, tabella
+  dei fold. Documentato in dettaglio in `INGESTION.md`.
+
+Da fare: `features.py`, `dataset.py`.
 
 Nota sui test: il backoff di produzione e' 30 s e i test sui riprovi lo azzerano via
 configurazione. Lasciandolo attivo la suite passava da 9 a 338 secondi.
+
+### 4.1 Fatti verificati sull'ingestione
+
+Struttura reale dei GRIB, ispezionata prima di scrivere il codice:
+
+| Famiglia | Struttura | Note |
+|---|---|---|
+| istantanee | `(time, latitude, longitude)` | asse temporale piatto, 7 variabili |
+| cumulate | `(time, step, latitude, longitude)` | corse di previsione, `valid_time` **bidimensionale** |
+| statiche | `(latitude, longitude)` | nessun asse temporale |
+
+Le cumulate sono il punto delicato: due corse al giorno (base 06 e 18 UTC) con step
+orari. Appiattendole si ottengono 756 istanti validi per un mese di 31 giorni, **zero
+duplicati**, tutte le 24 ore presenti.
+
+Verifiche sull'ingestione di gennaio 2024:
+
+| Cosa | Esito |
+|---|---|
+| Slot ingeriti | 93 su 93, 9 variabili, **0 NaN**, 17,7 s |
+| Plausibilita' fisica | tutte le 9 variabili in range (t2m 217-313 K, msl 939-1048 hPa) |
+| Somma della finestra di accumulo | ricalcolata dal GRIB in modo indipendente: **differenza 0,0** |
+| Chunk scritti | 12 per variabile invece di 358: Zarr salta i chunk interamente NaN |
+
+### 4.2 Rumore di quantizzazione su `sf` e `tp`
+
+Fisicamente la neve in equivalente d'acqua non puo' superare la precipitazione totale.
+Nei dati accade nel **12,26 %** dei punti.
+
+Non e' un difetto dell'ingestione. `tp` e `sf` sono impacchettati in GRIB come interi
+scalati **in modo indipendente**, quindi quando nevica puro (`sf` ~ `tp`)
+l'arrotondamento puo' far superare `tp`. Misure: violazione massima **0,0055 mm**,
+rapporto `sf/tp` massimo **1,043**, e dove `tp = 0` il valore di `sf` non supera
+0,005 mm.
+
+Decisione: l'ingestione **non corregge** il dato, per restare fedele alla sorgente. La
+correzione appartiene alla costruzione del target, dove il rapporto va limitato a [0, 1]
+e definito solo sopra la soglia di 0,1 mm. La testa `fraction_of` resta appropriata.
 
 ## 5. Verifiche eseguite
 
@@ -202,8 +247,10 @@ configurazione. Lasciandolo attivo la suite passava da 9 a 338 secondi.
 | Credenziali | `tests/test_credentials.py` | superato: 18 casi, incluso il BOM e la non esposizione del valore |
 | Layer tabellare | `tests/test_tables.py` | superato: 20 casi, incluso un Parquet con schema vecchio |
 | Downloader | `tests/test_download.py` | superato: 27 casi con client finto (ripresa, riprovi, scrittura atomica) |
+| Ingestione | `tests/test_ingest.py` | superato: 27 casi, dataset sintetici + integrazione sui GRIB reali |
+| Ingestione su dati reali | gennaio 2024 | superato: 93 slot, 0 NaN, accumulo ricalcolato con differenza 0,0 |
 | Lint | `ruff check src tests scripts` | nessun rilievo |
-| Suite completa | `pytest tests` | 275 superati in 9 s |
+| Suite completa | `pytest tests` | 305 superati |
 
 ### 5.1 Accesso CDS verificato
 
