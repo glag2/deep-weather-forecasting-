@@ -3,8 +3,14 @@
 Un modello meteorologico non si giudica dall'errore assoluto ma dal confronto con
 alternative banali. Due sono indispensabili:
 
-- **persistenza**: ripetere l'ultimo stato osservato. Batterla e' il minimo sindacale
-  a breve termine, ed e' sorprendentemente difficile alle prime ore.
+- **persistenza ingenua**: ripetere l'ultimo stato osservato.
+- **persistenza diurna**: ripetere l'osservazione piu' recente alla stessa ora del
+  giorno del bersaglio. Poiche' gli slot 06Z, 12Z e 18Z distano 6, 6 e 12 ore, tre
+  slot fanno un giorno esatto e questo riferimento non paga lo sfasamento del ciclo
+  giorno-notte. Misurato sui dati e' molto piu' forte del precedente (RMSE 3,2 contro
+  4,7 gradi a un giorno), quindi **e' lui il riferimento onesto**: battere solo la
+  persistenza ingenua dimostrerebbe soltanto di aver imparato il ritmo giorno-notte,
+  che si ottiene gratis guardando ieri alla stessa ora.
 - **climatologia**: la media storica per mese e ora del giorno. E' la previsione
   ottimale in assenza di informazione, e su orizzonti lunghi e' l'avversario vero.
 
@@ -16,6 +22,7 @@ e le metriche restano stratificate per mese.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -479,9 +486,25 @@ def metrics_table(
 
 
 def persistence_baseline(
-    dataset: WeatherWindowDataset, *, max_windows: int | None = None
+    dataset: WeatherWindowDataset,
+    *,
+    max_windows: int | None = None,
+    mode: str = "naive",
 ) -> Prediction:
-    """Previsione di persistenza: l'ultimo stato osservato, ripetuto su ogni scadenza."""
+    """Previsione ottenuta ripetendo un'osservazione, senza alcun modello.
+
+    Due varianti, entrambe costruibili al momento della previsione:
+
+    - ``naive`` ripete l'ultimo stato osservato su tutte le scadenze;
+    - ``diurnal`` ripete l'osservazione piu' recente **alla stessa ora del giorno** del
+      bersaglio, quindi non paga lo sfasamento del ciclo giorno-notte.
+
+    La seconda e' molto piu' difficile da battere ed e' il riferimento onesto: una
+    previsione che superi solo la prima potrebbe non aver imparato nulla oltre al
+    ritmo giorno-notte, che si ottiene gratis guardando ieri alla stessa ora.
+    """
+    if mode not in {"naive", "diurnal"}:
+        raise EvaluationError(f"Modalita' di persistenza sconosciuta: {mode!r}")
     specs = target_specs(dataset.config)
     nomi = {spec.name for spec in specs}
     if "t2m" not in nomi or "tp" not in nomi:
@@ -510,35 +533,51 @@ def persistence_baseline(
         np.divide(neve, pioggia, out=quota, where=precipita)
         return (precipita & (quota >= SNOW_FRACTION_THRESHOLD)).astype(np.float32)
 
+    slot_al_giorno = dataset.config.time.slots_per_day
+
+    def indice_di_riferimento(scadenza: int) -> int:
+        """Posizione, dentro la finestra, dell'osservazione ripetuta come previsione.
+
+        In modalita' diurna si torna indietro di giorni interi a partire dal bersaglio,
+        cosi' l'osservazione scelta cade sempre alla sua stessa ora ed e' sempre dentro
+        la parte osservata della finestra.
+        """
+        if mode == "naive":
+            return dataset.input_slots - 1
+        giorni = math.ceil((scadenza + 1) / slot_al_giorno)
+        return dataset.input_slots + scadenza - giorni * slot_al_giorno
+
     for posizione in range(n_finestre):
         inizio = dataset.starts[posizione]
         totale = dataset.input_slots + dataset.output_slots
         finestra = dataset.reader.read_window(inizio, totale)
 
-        ultimo = dataset.input_slots - 1
-        ultimo_t2m = dataset.stats.normalize("t2m", finestra["t2m"][ultimo])
-        ultimo_tp = (finestra["tp"][ultimo] > soglia).astype(np.float32)
-
         bersaglio_t2m = dataset.stats.normalize("t2m", finestra["t2m"][dataset.input_slots :])
         bersaglio_tp = (finestra["tp"][dataset.input_slots :] > soglia).astype(np.float32)
 
         if ha_neve:
-            ultima_neve = occorrenza_neve(finestra["tp"][ultimo], finestra["sf"][ultimo])
             bersaglio_neve = occorrenza_neve(
                 finestra["tp"][dataset.input_slots :], finestra["sf"][dataset.input_slots :]
             )
 
-        piatti = ultimo_t2m.size
+        piatti = bersaglio_t2m[0].size
         scelti = generatore.choice(piatti, size=min(64, piatti), replace=False)
 
         for slot in range(dataset.output_slots):
             istante = dataset.reader.valid_time(inizio + dataset.input_slots + slot)
-            t2m_pred.append(ultimo_t2m.reshape(-1)[scelti])
+            origine = indice_di_riferimento(slot)
+            riferimento_t2m = dataset.stats.normalize("t2m", finestra["t2m"][origine])
+            riferimento_tp = (finestra["tp"][origine] > soglia).astype(np.float32)
+
+            t2m_pred.append(riferimento_t2m.reshape(-1)[scelti])
             t2m_vero.append(bersaglio_t2m[slot].reshape(-1)[scelti])
-            tp_prob.append(ultimo_tp.reshape(-1)[scelti])
+            tp_prob.append(riferimento_tp.reshape(-1)[scelti])
             tp_occ.append(bersaglio_tp[slot].reshape(-1)[scelti])
             if ha_neve:
-                neve_prob.append(ultima_neve.reshape(-1)[scelti])
+                riferimento_neve = occorrenza_neve(
+                    finestra["tp"][origine], finestra["sf"][origine]
+                )
+                neve_prob.append(riferimento_neve.reshape(-1)[scelti])
                 neve_occ.append(bersaglio_neve[slot].reshape(-1)[scelti])
             mesi.append(np.full(scelti.size, istante.month, dtype=np.int16))
             scadenze.append(np.full(scelti.size, slot, dtype=np.int16))

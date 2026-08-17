@@ -83,6 +83,9 @@ def main() -> None:
         network, dataset, output_layout, config, max_windows=args.max_windows
     )
     riferimento = persistence_baseline(dataset, max_windows=args.max_windows)
+    riferimento_diurno = persistence_baseline(
+        dataset, max_windows=args.max_windows, mode="diurnal"
+    )
 
     # ---------------------------------------------------------------- #
     # Calibrazione stimata sulla validazione
@@ -164,6 +167,11 @@ def main() -> None:
             # La persistenza e' gia' binaria: la sua soglia non ha nulla da ottimizzare.
             metrics_table(
                 riferimento, stats, model="persistence", split=args.split, fold=args.fold,
+                rain_threshold=0.5, snow_threshold=0.5,
+            ),
+            metrics_table(
+                riferimento_diurno, stats, model="persistence_diurnal",
+                split=args.split, fold=args.fold,
                 rain_threshold=0.5, snow_threshold=0.5,
             ),
         ]
