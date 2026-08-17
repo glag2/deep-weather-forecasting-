@@ -1,0 +1,46 @@
+# Due servizi sulla stessa immagine: uno per i comandi, uno per i notebook.
+#
+# I dati sono montati come volume e non copiati: sono decine di gigabyte, cambiano di
+# continuo mentre il download prosegue, e devono sopravvivere alla ricostruzione
+# dell'immagine.
+
+services:
+  dwf:
+    build: .
+    image: deep-weather-forecasting:cpu
+    working_dir: /app
+    volumes:
+      - ./datasets:/app/datasets
+      - ./configs:/app/configs
+    env_file:
+      # Le credenziali CDS restano fuori dall'immagine e fuori dal repository.
+      - .env
+    environment:
+      # Senza limite torch prende tutti i core e su una macchina condivisa rende il
+      # sistema inutilizzabile durante le epoche.
+      OMP_NUM_THREADS: ${DWF_THREADS:-4}
+      MKL_NUM_THREADS: ${DWF_THREADS:-4}
+    command: python scripts/ingest_era5.py --list
+
+  jupyter:
+    build: .
+    image: deep-weather-forecasting:cpu
+    working_dir: /app
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./datasets:/app/datasets
+      - ./configs:/app/configs
+      - ./notebooks:/app/notebooks
+    env_file:
+      - .env
+    environment:
+      OMP_NUM_THREADS: ${DWF_THREADS:-4}
+      MKL_NUM_THREADS: ${DWF_THREADS:-4}
+    command: >
+      jupyter lab
+      --ip=0.0.0.0
+      --port=8888
+      --no-browser
+      --allow-root
+      --ServerApp.root_dir=/app
