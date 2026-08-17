@@ -17,28 +17,11 @@ from pathlib import Path
 import torch
 
 from dwf.config import Config
+from dwf.data.features import InputLayout
 from dwf.models.heads import OutputLayout
 from dwf.models.network import DeepWeatherNet, NetworkSpec
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-
-def estimate_input_channels(config: Config) -> int:
-    """Conta i canali di input previsti dal piano di feature engineering."""
-    n_dynamic = len(config.variables.dynamic_short_names)
-    input_slots = config.windows.input_slots
-
-    channels = n_dynamic * input_slots
-    channels += len(config.features.tendency_lags) * n_dynamic
-    if config.features.include_wind_speed:
-        channels += input_slots
-    if config.features.include_static:
-        channels += len(config.variables.static_short_names)
-    if config.features.include_latitude_encoding:
-        channels += 2
-    if config.features.include_time_encoding:
-        channels += 4
-    return channels
 
 
 def time_training_step(
@@ -88,7 +71,7 @@ def main() -> None:
 
     config = Config.load(args.config)
     layout = OutputLayout.from_targets(config.targets, config.windows.output_slots)
-    in_channels = estimate_input_channels(config)
+    in_channels = InputLayout.from_config(config).n_channels
     crop = config.training.crop_size or 96
 
     network = DeepWeatherNet(

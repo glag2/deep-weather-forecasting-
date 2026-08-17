@@ -25,6 +25,11 @@ class VariableSpec:
     units: str
     description: str
     transform: Transform = "identity"
+    # Fattore applicato prima di `log1p`. Serve perche' `log1p` comprime solo valori
+    # dell'ordine dell'unita': la precipitazione in metri vale ~7e-4 e `log1p` la
+    # lascerebbe praticamente invariata, vanificando la compressione della coda.
+    # Portandola in millimetri, 0.1 mm e 70 mm diventano 0.095 e 4.26.
+    transform_scale: float = 1.0
     non_negative: bool = False
 
 
@@ -82,19 +87,20 @@ _SPECS: tuple[VariableSpec, ...] = (
     # --- cumulati sull'ora precedente ---
     VariableSpec(
         "total_precipitation", "tp", "accumulated", "m", "Precipitazione totale",
-        transform="log1p", non_negative=True,
+        transform="log1p", transform_scale=1000.0, non_negative=True,
     ),
     VariableSpec(
         "snowfall", "sf", "accumulated", "m of water equivalent", "Nevicata",
-        transform="log1p", non_negative=True,
+        transform="log1p", transform_scale=1000.0, non_negative=True,
     ),
     VariableSpec(
         "large_scale_precipitation", "lsp", "accumulated", "m",
-        "Precipitazione di larga scala", transform="log1p", non_negative=True,
+        "Precipitazione di larga scala", transform="log1p", transform_scale=1000.0,
+        non_negative=True,
     ),
     VariableSpec(
         "convective_precipitation", "cp", "accumulated", "m",
-        "Precipitazione convettiva", transform="log1p", non_negative=True,
+        "Precipitazione convettiva", transform="log1p", transform_scale=1000.0, non_negative=True,
     ),
     VariableSpec(
         "surface_solar_radiation_downwards", "ssrd", "accumulated", "J m-2",
