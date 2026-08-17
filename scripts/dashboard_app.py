@@ -26,6 +26,18 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
+from dwf.climate import (  # noqa: E402
+    ANNI_MINIMI_PER_TENDENZA,
+    ciclo_stagionale,
+    confronto_interannuale,
+    copertura,
+    giudizio_sulla_serie,
+    indici_estremi,
+    mappa_differenza_mensile,
+    medie_mensili,
+    mesi_confrontabili,
+    tendenza_annuale,
+)
 from dwf.config import Config  # noqa: E402
 from dwf.dashboard import (  # noqa: E402
     TECNOLOGIE,
@@ -72,6 +84,21 @@ def errori_in_cache(percorso: str, fold: int, n_finestre: int, scadenza: int):
     return mappa_errori(config, fold, n_finestre=n_finestre, scadenza=scadenza)
 
 
+@st.cache_data(show_spinner="Lettura della copertura temporale...")
+def copertura_in_cache(percorso: str):
+    return copertura(carica_config(percorso))
+
+
+@st.cache_data(show_spinner="Media dell'intero periodo sul dominio...")
+def mensili_in_cache(percorso: str):
+    return medie_mensili(carica_config(percorso))
+
+
+@st.cache_data(show_spinner="Conteggio delle giornate caratteristiche...")
+def estremi_in_cache(percorso: str):
+    return indici_estremi(carica_config(percorso))
+
+
 def mappa(asse, campo: np.ndarray, config: Config, *, titolo: str, cmap: str,
           vmin=None, vmax=None):
     """Disegna un campo con gli estremi geografici corretti.
@@ -112,7 +139,7 @@ fold = st.sidebar.number_input("Fold", min_value=0, max_value=20, value=0, step=
 sezione = st.sidebar.radio(
     "Sezione",
     ["Panoramica", "Dati", "Modello", "Prestazioni", "Confronto visivo",
-     "Mappa degli errori", "Risorse"],
+     "Mappa degli errori", "Clima", "Risorse"],
 )
 st.sidebar.caption(
     "Il confronto visivo e la mappa degli errori usano il blocco di **test**, "
@@ -397,6 +424,141 @@ elif sezione == "Mappa degli errori":
     colonna = round((12.5 - config.region.west) / config.region.grid_step)
     if 0 <= riga < campo.shape[0] and 0 <= colonna < campo.shape[1]:
         colonne[3].metric("Su Vigo", f"{float(campo[riga, colonna]):.2f} degC")
+
+
+# --------------------------------------------------------------------------- #
+# Clima
+# --------------------------------------------------------------------------- #
+
+elif sezione == "Clima":
+    st.header("Andamenti climatici")
+
+    copertura_ = copertura_in_cache(percorso_config)
+    giudizio = giudizio_sulla_serie(copertura_)
+    if copertura_ is None or copertura_.n_anni_completi < 2:
+        st.warning(giudizio)
+    else:
+        st.info(giudizio)
+
+    if copertura_ is None:
+        st.stop()
+
+    colonne = st.columns(4)
+    colonne[0].metric("Anni presenti", len(copertura_.anni))
+    colonne[1].metric("Anni completi", copertura_.n_anni_completi)
+    colonne[2].metric("Slot", f"{copertura_.slot:,}")
+    colonne[3].metric("Periodo", f"{copertura_.primo[:7]} .. {copertura_.ultimo[:7]}")
+
+    st.caption(
+        "Tutte le medie spaziali sono **pesate per l'area della cella**: su una griglia "
+        "in latitudine e longitudine le celle a nord coprono molto meno terreno, e una "
+        "media aritmetica darebbe loro un peso che non hanno."
+    )
+
+    st.subheader("Media mensile sul dominio")
+    mensili = mensili_in_cache(percorso_config)
+    if mensili is None:
+        st.warning("Nessuna serie disponibile: ingerire almeno un mese.")
+    else:
+        st.line_chart(
+            mensili.select("periodo", "media").to_pandas().set_index("periodo"),
+            height=280,
+        )
+
+        st.subheader("Lo stesso mese in anni diversi")
+        st.caption(
+            "E' il confronto onesto su una serie corta: toglie di mezzo il ciclo "
+            "stagionale, che e' di gran lunga il segnale piu' forte, e lascia vedere "
+            "la differenza fra annate."
+        )
+        interannuale = confronto_interannuale(config)
+        if interannuale is None:
+            st.info("Nessun mese si ripete ancora in due anni diversi.")
+        else:
+            largo = interannuale.pivot(on="year", index="month", values="media")
+            st.dataframe(largo, width="stretch", hide_index=True)
+
+        st.subheader("Ciclo stagionale")
+        stagionale = ciclo_stagionale(config)
+        if stagionale is not None:
+            st.caption(
+                "Media per mese dell'anno. La colonna `anni` dice su quante annate e' "
+                "calcolata ciascuna riga: dove vale uno, non e' una media, e' un'annata."
+            )
+            st.dataframe(stagionale, width="stretch", hide_index=True)
+
+    st.subheader("Tendenza annuale")
+    tendenza = tendenza_annuale(config)
+    if tendenza is None:
+        st.warning(
+            "Meno di due anni completi: non viene calcolata alcuna pendenza. "
+            "Una retta su un punto solo non esiste, e su due punti non ha incertezza "
+            "stimabile."
+        )
+    else:
+        colonne = st.columns(3)
+        colonne[0].metric("Pendenza", f"{tendenza.pendenza:+.3f} degC/anno")
+        basso, alto = tendenza.intervallo
+        colonne[1].metric(
+            "Intervallo 95%",
+            "non stimabile" if not np.isfinite(basso) else f"{basso:+.3f} .. {alto:+.3f}",
+        )
+        colonne[2].metric("Anni", tendenza.n_anni)
+        if not tendenza.significativa:
+            st.warning(
+                f"La pendenza **non** e' significativa: servono almeno "
+                f"{ANNI_MINIMI_PER_TENDENZA} anni completi e un intervallo che non "
+                "contenga lo zero. Il valore mostrato descrive queste annate, non il clima."
+            )
+
+    st.subheader("Differenza per cella fra due annate")
+    confrontabili = mesi_confrontabili(config)
+    if not confrontabili:
+        st.info("Nessun mese disponibile in due anni diversi.")
+    else:
+        nomi = {m: a for m, a in confrontabili}
+        colonne = st.columns(3)
+        mese = colonne[0].selectbox("Mese", sorted(nomi), format_func=lambda m: f"{m:02d}")
+        anni = nomi[mese]
+        anno_a = colonne[1].selectbox("Annata di riferimento", anni, index=0)
+        anno_b = colonne[2].selectbox("Annata da confrontare", anni, index=len(anni) - 1)
+        if anno_a == anno_b:
+            st.info("Scegliere due annate diverse.")
+        else:
+            differenza = mappa_differenza_mensile(config, mese, anno_a, anno_b)
+            if differenza is None:
+                st.warning("Dati insufficienti per una delle due annate.")
+            else:
+                estremo = float(np.nanmax(np.abs(differenza)))
+                figura, asse = plt.subplots(figsize=(7, 4.5))
+                immagine = mappa(
+                    asse, differenza, config,
+                    titolo=f"{mese:02d}/{anno_b} meno {mese:02d}/{anno_a} (degC)",
+                    cmap="RdBu_r", vmin=-estremo, vmax=estremo,
+                )
+                figura.colorbar(immagine, ax=asse, shrink=0.8)
+                st.pyplot(figura, width="stretch")
+                plt.close(figura)
+                st.caption(
+                    f"Media sul dominio: {float(np.nanmean(differenza)):+.2f} degC. "
+                    "La scala e' centrata sullo zero, cosi' il colore non suggerisce un "
+                    "segno che i dati non hanno. Una sola coppia di annate mostra "
+                    "**variabilita' del tempo atmosferico**, non una tendenza."
+                )
+
+    st.subheader("Giornate caratteristiche a Vigo di Cadore")
+    st.caption(
+        "Gli indici climatici standard usano minimo e massimo giornalieri. Qui il giorno "
+        "ha tre osservazioni, quindi il gelo si conta sullo slot delle 06 UTC, il piu' "
+        "vicino al minimo mattutino. Sono approssimazioni dichiarate. La colonna `slot` "
+        "dice quanti dati ha ciascun anno: gli anni parziali non sono confrontabili con "
+        "quelli completi."
+    )
+    estremi = estremi_in_cache(percorso_config)
+    if estremi is None:
+        st.info("Nessun dato per gli indici.")
+    else:
+        st.dataframe(estremi, width="stretch", hide_index=True)
 
 
 # --------------------------------------------------------------------------- #
