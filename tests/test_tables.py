@@ -236,6 +236,9 @@ def test_manifest_dei_download_accetta_mesi_nulli() -> None:
                 "filename": ["static.grib", "instantaneous_2024-01.grib"],
                 "n_variables": [2, 7],
                 "n_hours": [1, 3],
+                # I campi statici non coprono giorni: anche questi restano nulli.
+                "n_days": [None, 31],
+                "last_day": [None, 31],
                 "status": ["downloaded", "skipped"],
                 "size_bytes": [1024, 2048],
                 "seconds": [1.0, 0.0],

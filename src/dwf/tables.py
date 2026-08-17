@@ -203,6 +203,10 @@ DOWNLOADS = TableSpec(
         "filename": pl.String,
         "n_variables": pl.Int32,
         "n_hours": pl.Int32,
+        # Quanti giorni copre il file e qual e' l'ultimo: un mese in corso e' parziale
+        # per forza, e questi due campi dicono se va riscaricato quando ERA5 avanza.
+        "n_days": pl.Int32,
+        "last_day": pl.Int8,
         "status": pl.String,
         "size_bytes": pl.Int64,
         "seconds": pl.Float64,

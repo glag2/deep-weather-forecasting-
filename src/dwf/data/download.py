@@ -22,7 +22,7 @@ from __future__ import annotations
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -56,6 +56,11 @@ class DownloadTask:
     year: int | None
     month: int | None
     target: Path
+    # I giorni fanno parte del task e non vengono ricalcolati al momento della
+    # richiesta: un mese puo' essere parziale perche' tagliato dal periodo
+    # configurato oppure perche' ERA5 non lo ha ancora pubblicato tutto, e chi
+    # ispeziona il manifest deve poter sapere quanti giorni copre davvero il file.
+    days: tuple[int, ...] = ()
 
     @property
     def label(self) -> str:
@@ -68,21 +73,30 @@ def _hour_strings(hours: Sequence[int]) -> list[str]:
     return [f"{hour:02d}:00" for hour in sorted(hours)]
 
 
-def _day_strings(config: Config, year: int, month: int) -> list[str]:
-    """Giorni da chiedere per quel mese, limitati al periodo configurato.
+def days_to_request(
+    config: Config, year: int, month: int, until: date | None = None
+) -> tuple[int, ...]:
+    """Giorni da chiedere per quel mese, dentro il periodo e dentro il pubblicato.
 
     Il primo e l'ultimo mese del periodo sono in genere parziali: chiedere il mese
-    intero scaricherebbe dati fuori intervallo, e nell'ultimo mese giorni non ancora
-    pubblicati, che il CDS rifiuta.
+    intero scaricherebbe dati fuori intervallo. `until` taglia ulteriormente in coda,
+    perche' ERA5 pubblica con alcuni giorni di ritardo e chiedere giorni non ancora
+    esistenti fa rifiutare l'intera richiesta.
     """
-    return [f"{day:02d}" for day in config.time.days_in_month(year, month)]
+    giorni = config.time.days_in_month(year, month)
+    if until is not None:
+        giorni = [giorno for giorno in giorni if date(year, month, giorno) <= until]
+    return tuple(giorni)
 
 
-def build_tasks(config: Config) -> list[DownloadTask]:
+def build_tasks(config: Config, *, until: date | None = None) -> list[DownloadTask]:
     """Elenca tutte le richieste necessarie a coprire il periodo configurato.
 
     L'ordine e' deliberato: prima i campi statici (una sola richiesta, veloce, e se
     fallisce non vale la pena accodare decine di mesi), poi mese per mese.
+
+    Con `until` i mesi interamente successivi alla frontiera di pubblicazione vengono
+    omessi invece di essere richiesti e rifiutati.
     """
     raw_dir = config.raw_dir
     tasks: list[DownloadTask] = []
@@ -103,6 +117,10 @@ def build_tasks(config: Config) -> list[DownloadTask]:
     hourly_hours = tuple(config.time.hourly_hours)
 
     for year, month in config.time.months():
+        giorni = days_to_request(config, year, month, until)
+        if not giorni:
+            # Mese interamente oltre la frontiera di pubblicazione: non esiste ancora.
+            continue
         if config.variables.instantaneous:
             tasks.append(
                 DownloadTask(
@@ -112,6 +130,7 @@ def build_tasks(config: Config) -> list[DownloadTask]:
                     year=year,
                     month=month,
                     target=raw_dir / f"instantaneous_{year:04d}-{month:02d}.grib",
+                    days=giorni,
                 )
             )
         if config.variables.accumulated:
@@ -123,6 +142,7 @@ def build_tasks(config: Config) -> list[DownloadTask]:
                     year=year,
                     month=month,
                     target=raw_dir / f"accumulated_{year:04d}-{month:02d}.grib",
+                    days=giorni,
                 )
             )
     return tasks
@@ -140,12 +160,12 @@ def build_payload(task: DownloadTask, config: Config) -> dict[str, Any]:
             raise ValueError(f"Task {task.kind!r} senza anno o mese")
         years = [f"{task.year:04d}"]
         months = [f"{task.month:02d}"]
-        days = _day_strings(config, task.year, task.month)
-        if not days:
+        if not task.days:
             raise ValueError(
                 f"Nessun giorno da richiedere per {task.year}-{task.month:02d}: "
                 "task incoerente con il periodo configurato"
             )
+        days = [f"{giorno:02d}" for giorno in task.days]
 
     payload: dict[str, Any] = {
         "product_type": ["reanalysis"],
@@ -288,6 +308,11 @@ def outcomes_to_records(outcomes: Sequence[DownloadOutcome]) -> list[dict[str, A
             "filename": outcome.task.target.name,
             "n_variables": len(outcome.task.variables),
             "n_hours": len(outcome.task.hours),
+            "n_days": len(outcome.task.days),
+            # L'ultimo giorno coperto e' cio' che distingue un mese parziale gia'
+            # completo da uno che va riscaricato perche' nel frattempo ERA5 ha
+            # pubblicato altri giorni.
+            "last_day": max(outcome.task.days) if outcome.task.days else None,
             "status": outcome.status,
             "size_bytes": outcome.size_bytes,
             "seconds": outcome.seconds,
