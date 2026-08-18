@@ -117,6 +117,9 @@ def build_network(
                 blocks=config.model.global_blocks,
                 heads=config.model.heads,
                 dropout=config.model.dropout,
+                attention_sink=config.model.attention_sink,
+                hca_pool=config.model.hca_pool,
+                hca_blocks=config.model.hca_blocks,
             ),
             layout,
         )

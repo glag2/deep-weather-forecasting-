@@ -426,6 +426,12 @@ class ModelConfig(_Base):
     embed_channels: Annotated[int, Field(ge=32, le=1024)] = 192
     global_blocks: Annotated[int, Field(ge=1, le=12)] = 4
     heads: Annotated[int, Field(ge=1, le=16)] = 4
+    # Logit appreso nel denominatore del softmax: una testa puo' non attendere nulla.
+    attention_sink: bool = False
+    # Ramo a contesto compresso: i token vengono ridotti di questo fattore e attesi in
+    # modo denso fra loro. 0 spegne il ramo. Spento per default finche' non e' misurato.
+    hca_pool: Annotated[int, Field(ge=0, le=16)] = 0
+    hca_blocks: Annotated[int, Field(ge=1, le=6)] = 1
 
     @model_validator(mode="after")
     def _nucleo_globale_coerente(self) -> Self:
@@ -441,6 +447,10 @@ class ModelConfig(_Base):
             )
         if self.patch & (self.patch - 1):
             raise ValueError(f"model.patch deve essere una potenza di due: {self.patch}")
+        if self.hca_pool == 1:
+            raise ValueError(
+                "model.hca_pool 1 non comprime nulla: usare 0 per spegnere il ramo"
+            )
         return self
 
     @field_validator("variant")

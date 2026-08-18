@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from torch import nn
 
 from dwf.config import Config
 from dwf.data.features import InputLayout
@@ -154,6 +155,118 @@ def test_un_checkpoint_senza_architettura_e_letto_come_convoluzionale(
     check_destination_free(tmp_path, "unet")
     with pytest.raises(TrainingError, match="'unet'"):
         check_destination_free(tmp_path, "global")
+
+
+class TestContestoCompresso:
+    """Il ramo HCA: attenzione densa su token molto grossi."""
+
+    def test_il_ramo_parte_come_un_non_ramo(self, layout: OutputLayout) -> None:
+        """Iniezione a zero: l'uscita iniziale coincide con quella della rete senza ramo.
+
+        Serve perche' un eventuale guadagno sia del meccanismo e non del diverso punto di
+        partenza dei pesi.
+        """
+        torch.manual_seed(0)
+        senza = _rete(layout)
+        torch.manual_seed(0)
+        con = _rete(layout, hca_pool=2)
+        ingresso = torch.randn(2, 6, 16, 16)
+
+        with torch.no_grad():
+            # I due modelli condividono i pesi dei blocchi fini perche' il seme e' lo
+            # stesso e il ramo compresso e' costruito dopo.
+            con.load_state_dict(senza.state_dict(), strict=False)
+            assert torch.allclose(senza(ingresso), con(ingresso), atol=1e-6)
+
+    def test_il_ramo_cambia_l_uscita_quando_ha_pesi(self, layout: OutputLayout) -> None:
+        """Se restasse ininfluente anche con pesi non nulli non starebbe facendo nulla."""
+        torch.manual_seed(0)
+        rete = _rete(layout, hca_pool=2)
+        token = torch.randn(2, 16, 8, 8)
+
+        # Il confronto e' sui token e non sull'uscita perche' `output_conv` parte a zero:
+        # sull'uscita qualunque modifica interna sarebbe invisibile.
+        with torch.no_grad():
+            invariati = rete._contesto_compresso(token)
+            nn.init.normal_(rete.hca_merge.weight, std=0.1)
+            modificati = rete._contesto_compresso(token)
+
+        assert torch.allclose(invariati, token, atol=1e-6)
+        assert not torch.allclose(modificati, token, atol=1e-4)
+
+    def test_il_ramo_aggiunge_pochi_parametri(self, layout: OutputLayout) -> None:
+        """Il senso del ramo e' contesto quasi globale a costo trascurabile."""
+        senza = _rete(layout, blocks=4)
+        con = _rete(layout, blocks=4, hca_pool=4)
+
+        aggiunti = con.n_parameters - senza.n_parameters
+        assert 0 < aggiunti < senza.n_parameters / 2
+
+    def test_una_griglia_di_token_piu_piccola_della_riduzione_non_fa_fallire(
+        self, layout: OutputLayout
+    ) -> None:
+        """Il ritaglio d'addestramento e' piccolo e il dominio intero no: passino entrambi."""
+        rete = _rete(layout, patch=4, hca_pool=16)
+
+        uscita = rete(torch.zeros(1, 6, 16, 16))
+        assert uscita.shape == (1, layout.total_channels, 16, 16)
+
+    def test_una_riduzione_di_uno_e_rifiutata(self, layout: OutputLayout) -> None:
+        with pytest.raises(ValueError, match="hca_pool"):
+            _rete(layout, hca_pool=1)
+
+    def test_gli_stessi_pesi_valgono_a_qualunque_risoluzione_anche_col_ramo(
+        self, layout: OutputLayout
+    ) -> None:
+        """Il ramo non deve introdurre dipendenze dal numero di token."""
+        rete = _rete(layout, hca_pool=2)
+        rete.eval()
+
+        with torch.no_grad():
+            assert rete(torch.zeros(1, 6, 16, 16)).shape[-2:] == (16, 16)
+            assert rete(torch.zeros(1, 6, 40, 24)).shape[-2:] == (40, 24)
+
+
+class TestAttentionSink:
+    def test_il_sink_aggiunge_un_solo_token_per_blocco(self, layout: OutputLayout) -> None:
+        senza = _rete(layout, blocks=2)
+        con = _rete(layout, blocks=2, attention_sink=True)
+
+        assert con.n_parameters - senza.n_parameters == 2 * 16
+
+    def test_un_sink_nullo_lascia_l_attenzione_invariata(self, layout: OutputLayout) -> None:
+        """Inizializzato a zero il sink non e' neutro: assorbe peso di attenzione.
+
+        Il valore del token e' nullo, ma il suo logit non lo e', quindi il denominatore
+        del softmax cresce e l'uscita e' attenuata. E' esattamente l'effetto voluto, e va
+        verificato che avvenga, non che non avvenga.
+        """
+        torch.manual_seed(0)
+        senza = _rete(layout, blocks=1)
+        torch.manual_seed(0)
+        con = _rete(layout, blocks=1, attention_sink=True)
+        con.load_state_dict(senza.state_dict(), strict=False)
+        ingresso = torch.randn(1, 6, 16, 16)
+
+        with torch.no_grad():
+            uscita_senza = senza.blocks[0](senza.to_tokens(senza.stem(ingresso)))
+            uscita_con = con.blocks[0](con.to_tokens(con.stem(ingresso)))
+
+        assert not torch.allclose(uscita_senza, uscita_con, atol=1e-6)
+
+    def test_il_sink_e_appreso(self, layout: OutputLayout) -> None:
+        """Se non ricevesse gradiente sarebbe una costante inutile.
+
+        La convoluzione d'uscita e' inizializzata a zero perche' la previsione iniziale
+        sia neutra, e questo azzera il gradiente di *tutta* la rete al primo passo: per
+        misurare il sink va quindi resa non nulla.
+        """
+        rete = _rete(layout, blocks=1, attention_sink=True)
+        nn.init.normal_(rete.output_conv.weight, std=0.1)
+        rete(torch.randn(1, 6, 16, 16)).pow(2).mean().backward()
+
+        assert rete.blocks[0].sink.grad is not None
+        assert float(rete.blocks[0].sink.grad.abs().sum()) > 0.0
 
 
 def test_channels_last_non_cambia_il_risultato(layout: OutputLayout) -> None:

@@ -51,6 +51,15 @@ class GlobalNetworkSpec:
     heads: int = 4
     mlp_ratio: float = 2.0
     dropout: float = 0.0
+    # Logit appreso aggiunto al denominatore del softmax dell'attenzione (attention sink,
+    # DeepSeek-V4): permette a una testa di non attendere quasi nulla invece di essere
+    # costretta a distribuire tutto il peso fra i token disponibili.
+    attention_sink: bool = False
+    # Riduzione ulteriore dei token per il ramo a contesto compresso (HCA). Con 0 il ramo
+    # non esiste. Con 4, a patch 8, i 33x51 token del dominio diventano 9x13: un contesto
+    # quasi globale a un sedicesimo del costo di attenzione.
+    hca_pool: int = 0
+    hca_blocks: int = 1
 
     def __post_init__(self) -> None:
         if self.in_channels < 1:
@@ -66,6 +75,14 @@ class GlobalNetworkSpec:
             raise ValueError(f"blocks deve essere positivo: {self.blocks}")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError(f"dropout fuori range [0, 1): {self.dropout}")
+        if self.hca_pool < 0 or self.hca_pool == 1:
+            raise ValueError(
+                f"hca_pool deve essere 0 (ramo assente) o almeno 2: {self.hca_pool}"
+            )
+        if self.hca_pool and self.hca_blocks < 1:
+            raise ValueError(
+                f"con hca_pool {self.hca_pool} servono almeno 1 blocco: {self.hca_blocks}"
+            )
 
     @property
     def size_multiple(self) -> int:
@@ -81,7 +98,14 @@ class GlobalBlock(nn.Module):
     entro un intorno.
     """
 
-    def __init__(self, channels: int, heads: int, mlp_ratio: float, dropout: float) -> None:
+    def __init__(
+        self,
+        channels: int,
+        heads: int,
+        mlp_ratio: float,
+        dropout: float,
+        attention_sink: bool = False,
+    ) -> None:
         super().__init__()
         # Posizione iniettata da una convoluzione invece che da una tabella assoluta:
         # una tabella sarebbe legata al numero di token visto in addestramento, e la
@@ -91,6 +115,14 @@ class GlobalBlock(nn.Module):
         self.attention = nn.MultiheadAttention(
             channels, heads, dropout=dropout, batch_first=True
         )
+        # Il sink e' un token in piu' fra le chiavi e i valori, non fra le query: assorbe
+        # peso di attenzione senza produrre una posizione d'uscita. Con il sink una testa
+        # che non ha nulla da dire su un token puo' lasciarlo quasi invariato, mentre il
+        # softmax da solo la obbliga a scegliere fra i token esistenti. Rispetto al logit
+        # scalare di DeepSeek-V4 questa versione ha anche un valore appreso, cioe' e' un
+        # po' piu' libera: la differenza e' dichiarata perche' non e' la stessa cosa.
+        self.sink = nn.Parameter(torch.zeros(1, 1, channels)) if attention_sink else None
+
         self.norm_dense = nn.LayerNorm(channels)
         nascosti = int(channels * mlp_ratio)
         self.dense = nn.Sequential(
@@ -107,9 +139,10 @@ class GlobalBlock(nn.Module):
         token = features.flatten(2).transpose(1, 2)
 
         normalizzati = self.norm_attention(token)
-        attesi, _ = self.attention(
-            normalizzati, normalizzati, normalizzati, need_weights=False
-        )
+        chiavi = normalizzati
+        if self.sink is not None:
+            chiavi = torch.cat([self.sink.expand(lotto, -1, -1), normalizzati], dim=1)
+        attesi, _ = self.attention(normalizzati, chiavi, chiavi, need_weights=False)
         token = token + attesi
         token = token + self.dense(self.norm_dense(token))
 
@@ -135,9 +168,29 @@ class GlobalContextNet(nn.Module):
             spec.base_channels, spec.embed_channels, spec.patch, stride=spec.patch
         )
         self.blocks = nn.ModuleList(
-            GlobalBlock(spec.embed_channels, spec.heads, spec.mlp_ratio, spec.dropout)
+            GlobalBlock(
+                spec.embed_channels, spec.heads, spec.mlp_ratio, spec.dropout,
+                spec.attention_sink,
+            )
             for _ in range(spec.blocks)
         )
+        if spec.hca_pool:
+            self.hca = nn.ModuleList(
+                GlobalBlock(
+                    spec.embed_channels, spec.heads, spec.mlp_ratio, spec.dropout,
+                    spec.attention_sink,
+                )
+                for _ in range(spec.hca_blocks)
+            )
+            # Iniezione a zero: all'inizio il ramo compresso non esiste, e la rete parte
+            # esattamente dove partiva prima. Cosi' il ramo deve guadagnarsi il suo peso,
+            # e un eventuale peggioramento non e' un artefatto dell'inizializzazione.
+            self.hca_merge = nn.Conv2d(spec.embed_channels, spec.embed_channels, 1)
+            nn.init.zeros_(self.hca_merge.weight)
+            nn.init.zeros_(self.hca_merge.bias)
+        else:
+            self.hca = None
+            self.hca_merge = None
         self.token_norm = nn.LayerNorm(spec.embed_channels)
         self.from_tokens = nn.Conv2d(spec.embed_channels, spec.base_channels, 1)
 
@@ -159,6 +212,30 @@ class GlobalContextNet(nn.Module):
     def n_parameters(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters())
 
+    def _contesto_compresso(self, token: torch.Tensor) -> torch.Tensor:
+        """Aggiunge ai token il risultato dell'attenzione su token molto piu' grossi.
+
+        E' l'idea di HCA separata dal suo nome: lo stesso raggruppamento delle chiavi, ma
+        con attenzione **densa** sull'insieme compresso, quindi senza sparsita', senza
+        indexer e senza kernel dedicati. Il ramo aggiunge contesto quasi globale a un
+        costo che scala con la quarta potenza inversa della riduzione, e viene applicato
+        prima dei blocchi fini perche' serve che siano loro a usarlo.
+        """
+        if self.hca is None or self.hca_merge is None:
+            return token
+
+        altezza, larghezza = token.shape[-2:]
+        # Un ritaglio piccolo puo' avere meno token del fattore di riduzione: in quel caso
+        # si comprime quanto si puo', invece di fallire su una dimensione di nucleo.
+        riduzione = max(2, min(self.spec.hca_pool, altezza, larghezza))
+        compressi = nn.functional.avg_pool2d(token, riduzione, ceil_mode=True)
+        for blocco in self.hca:
+            compressi = blocco(compressi)
+        riportati = nn.functional.interpolate(
+            compressi, size=(altezza, larghezza), mode="bilinear", align_corners=False
+        )
+        return token + self.hca_merge(riportati)
+
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         if features.ndim != 4:
             raise ValueError(
@@ -175,6 +252,7 @@ class GlobalContextNet(nn.Module):
         locale = nn.functional.gelu(self.stem_norm(self.stem(padded)))
 
         token = self.to_tokens(locale)
+        token = self._contesto_compresso(token)
         for blocco in self.blocks:
             token = blocco(token)
         lotto, canali, altezza, larghezza = token.shape
