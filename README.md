@@ -184,6 +184,25 @@ script**: non vanno modificate a mano, perche' la prossima esecuzione sovrascriv
 | [`docs/INPUT_DAYS.md`](docs/INPUT_DAYS.md) | Quanti giorni di storico in ingresso | `scripts/screen_input_days.py` |
 | [`docs/OCCURRENCE_ANCHOR.md`](docs/OCCURRENCE_ANCHOR.md) | Ancoraggio della probabilita' di pioggia | `scripts/screen_occurrence_anchor.py` |
 
+## Quanto vale il modello, oggi
+
+L'errore assoluto non dice se un modello serve. Il confronto che lo dice e' contro la
+persistenza diurna, cioe' l'ipotesi "domani come ieri alla stessa ora", che non costa
+nulla. Sullo split di test, temperatura a 2 metri:
+
+| ore avanti | modello | ieri stessa ora | guadagno |
+|---|---|---|---|
+| +12 | 1,87 C | 2,43 C | +23 % |
+| +24 | 2,27 C | 2,40 C | **+5,5 %** |
+| +48 | 2,99 C | 3,24 C | +7,6 % |
+| +72 | 3,32 C | 3,68 C | +9,8 % |
+
+A ventiquattro ore il modello guadagna il cinque per cento sul non fare nulla. Cio' che
+ha imparato e' il ciclo giornaliero, che gli era gia' dato dall'ancoraggio, piu' un
+lisciamento locale; la dinamica non c'e'. Le cause misurate sono in
+[docs/PROGRESS.md](docs/PROGRESS.md) sezione 14: campo recettivo efficace di 130 km,
+nessuna variabile in quota, 2,7 visite per finestra in tutto l'addestramento.
+
 ## Limiti noti
 
 - **ERA5 ha 5-6 giorni di latenza.** Una previsione avviata dagli ultimi dati
