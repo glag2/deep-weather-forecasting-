@@ -1,161 +1,161 @@
-# Come funziona l'ingestione dei dati
+# How data ingestion works
 
-Questo documento spiega come i file GRIB scaricati dal Climate Data Store diventano
-tensori pronti per l'addestramento. È pensato per chi riprende il progetto senza averlo
-scritto: descrive **cosa** fa ogni passaggio, **perché** è fatto così e **come**
-rieseguirlo o estenderlo.
+This document explains how the GRIB files downloaded from the Climate Data Store become
+tensors ready for training. It is meant for whoever picks up the project without having
+written it: it describes **what** every step does, **why** it is done this way and **how**
+to rerun or extend it.
 
-I numeri riportati sono misurati sull'ingestione reale di gennaio 2024, non stimati.
-
----
-
-## 1. Il problema
-
-ERA5 distribuisce GRIB, un formato pensato per l'archiviazione meteorologica: compatto,
-autodescrittivo, ma pessimo per l'addestramento. Leggere un campo richiede di
-decodificare messaggi sequenzialmente, non esiste accesso casuale efficiente a "lo slot
-numero 1417", e le variabili istantanee e cumulate hanno strutture temporali diverse e
-incompatibili.
-
-Un modello che addestra ha bisogno dell'opposto: leggere rapidamente finestre arbitrarie
-di 30 slot consecutivi, migliaia di volte per epoca, in ordine casuale.
-
-La pipeline risolve questo con **due livelli di archiviazione**, ciascuno scelto per il
-compito che deve svolgere.
+The numbers reported are measured on the real ingestion of January 2024, not estimated.
 
 ---
 
-## 2. I due livelli
+## 1. The problem
 
-### Livello 1 — Zarr: i tensori
+ERA5 distributes GRIB, a format designed for meteorological archiving: compact,
+self-describing, but terrible for training. Reading a field requires
+decoding messages sequentially, there is no efficient random access to "slot
+number 1417", and instantaneous and accumulated variables have different and
+incompatible time structures.
 
-`datasets/era5_slots.zarr` contiene i dati numerici, con dimensioni
-`slot × latitude × longitude` = `2862 × 261 × 401`, una variabile per array.
+A model that trains needs the opposite: reading arbitrary windows
+of 30 consecutive slots quickly, thousands of times per epoch, in random order.
 
-Zarr è, in sostanza, **un array numpy su disco**: suddiviso in blocchi (*chunk*)
-compressi indipendenti, leggibili in parallelo e senza caricare il resto. Ogni chunk
-copre 8 slot e l'intera griglia spaziale, quindi leggere una finestra temporale non
-tocca mai dati spaziali inutili.
+The pipeline solves this with **two storage levels**, each chosen for the
+job it has to do.
 
-Perché non altro:
+---
 
-| Formato | Perché scartato |
+## 2. The two levels
+
+### Level 1: Zarr, the tensors
+
+`datasets/era5_slots.zarr` contains the numeric data, with dimensions
+`slot × latitude × longitude` = `2862 × 261 × 401`, one variable per array.
+
+Zarr is, in essence, **a numpy array on disk**: split into independently
+compressed blocks (*chunks*), readable in parallel and without loading the rest. Every chunk
+covers 8 slots and the whole spatial grid, so reading a time window never
+touches useless spatial data.
+
+Why not something else:
+
+| Format | Why it was discarded |
 |---|---|
-| CSV | 229 milioni di righe per mese, testo non compresso, nessun accesso casuale. Improponibile. |
-| GRIB direttamente | Nessun accesso casuale; decodifica ripetuta a ogni epoca. |
-| NetCDF singolo file | Un solo file da GB, difficile da scrivere in modo incrementale e concorrente. |
-| Parquet per i tensori | Colonnare orientato alle righe: un tensore 3-D diventa una tabella lunga e la lettura amplifica di circa 11 volte. |
+| CSV | 229 million rows per month, uncompressed text, no random access. Out of the question. |
+| GRIB directly | No random access; repeated decoding at every epoch. |
+| Single NetCDF file | A single file of GB, hard to write incrementally and concurrently. |
+| Parquet for the tensors | Columnar but row oriented: a 3-D tensor becomes a long table and reading amplifies by about 11 times. |
 
-Zarr è inoltre indipendente dal linguaggio: lo stesso store si legge da Python, Julia,
-R o JavaScript.
+Zarr is also language independent: the same store is read from Python, Julia,
+R or JavaScript.
 
-### Livello 2 — Parquet: i metadati
+### Level 2: Parquet, the metadata
 
-`datasets/tables/*.parquet` contiene tutto ciò che **descrive** i dati e si interroga con
-Polars: quali slot esistono, quali sono utilizzabili, quali statistiche hanno, come sono
-divisi in fold.
+`datasets/tables/*.parquet` contains everything that **describes** the data and is queried with
+Polars: which slots exist, which are usable, which statistics they have, how they are
+divided into folds.
 
-Sono tabelle piccole (25 KB per il catalogo di 2862 slot) su cui si fanno filtri e
-raggruppamenti. È esattamente il caso d'uso in cui Polars eccelle, mentre i tensori
-restano in Zarr.
+These are small tables (25 KB for the catalogue of 2862 slots) on which filters and
+groupings are done. It is exactly the use case where Polars excels, while the tensors
+stay in Zarr.
 
-**La regola divisoria**: numeri su griglia → Zarr; tutto ciò su cui si vuole fare una
-query → Parquet.
+**The dividing rule**: numbers on a grid → Zarr; everything you want to run a
+query on → Parquet.
 
 ---
 
-## 3. Il flusso completo
+## 3. The complete flow
 
 ```
 CDS API                  scripts/download_era5.py
    │
-   ├─ instantaneous_YYYY-MM.grib   7 variabili, ore 3..22, ~139 MB
-   ├─ accumulated_YYYY-MM.grib     2 variabili, corse di previsione, ~248 MB
-   └─ static.grib                  2 campi invarianti, 613 KB
+   ├─ instantaneous_YYYY-MM.grib   7 variables, hours 3..22, ~139 MB
+   ├─ accumulated_YYYY-MM.grib     2 variables, forecast runs, ~248 MB
+   └─ static.grib                  2 invariant fields, 613 KB
    │
    ▼                       scripts/ingest_era5.py
- ingestione
+ ingestion
    │
-   ├─ era5_slots.zarr      9 variabili × 2862 slot
-   ├─ era5_static.zarr     2 campi × griglia
+   ├─ era5_slots.zarr      9 variables × 2862 slots
+   ├─ era5_static.zarr     2 fields × grid
    └─ tables/*.parquet     slots, slot_stats, folds, variables
 ```
 
-### 3.1 Preallocazione dello store
+### 3.1 Preallocating the store
 
-`initialize_store` crea l'intero store per **tutto** il periodo configurato, riempito di
-NaN, prima di ingerire qualsiasi mese. Ogni mese viene poi scritto nella sua regione con
-`region=`, senza riscrivere il resto.
+`initialize_store` creates the whole store for **all** the configured period, filled with
+NaN, before ingesting any month. Every month is then written into its region with
+`region=`, without rewriting the rest.
 
-Questo permette di ingerire i mesi **in qualunque ordine e mentre il download prosegue**:
-i mesi non ancora arrivati restano NaN e il catalogo li marca come non utilizzabili.
+This makes it possible to ingest the months **in any order and while the download continues**:
+the months not yet arrived stay NaN and the catalogue marks them as not usable.
 
-Un dettaglio verificato che rende la scelta economica: **Zarr non scrive su disco i chunk
-interamente uguali al valore di riempimento**. Dopo aver preallocato 2862 slot e ingerito
-solo gennaio 2024, esistono 12 chunk per variabile invece di 358. Preallocare non costa
-spazio.
+A verified detail that makes the choice cheap: **Zarr does not write to disk the chunks
+entirely equal to the fill value**. After preallocating 2862 slots and ingesting
+only January 2024, there are 12 chunks per variable instead of 358. Preallocating costs
+no space.
 
-### 3.2 Variabili istantanee
+### 3.2 Instantaneous variables
 
-Struttura reale, verificata sui file: un asse `time` piatto con tutte le ore richieste,
-più `latitude` e `longitude`. La lettura è diretta: si selezionano gli istanti degli slot
-(06, 12, 18 UTC) e si scrivono.
+Real structure, verified on the files: a flat `time` axis with all the requested hours,
+plus `latitude` and `longitude`. Reading is direct: the instants of the slots
+(06, 12, 18 UTC) are selected and written.
 
-### 3.3 Variabili cumulate — il punto delicato
+### 3.3 Accumulated variables, the delicate point
 
-Qui il GRIB non ha un asse temporale piatto. ERA5 archivia le cumulate come **corse di
-previsione**: due corse al giorno, con base alle 06 e alle 18 UTC, ciascuna con più
-`step` orari. La struttura è `(time, step)` e l'istante reale di ogni valore sta in una
-coordinata **bidimensionale** `valid_time = time + step`.
+Here the GRIB does not have a flat time axis. ERA5 archives the accumulations as **forecast
+runs**: two runs per day, based at 06 and 18 UTC, each with several
+hourly `step` values. The structure is `(time, step)` and the real instant of every value is in a
+**two-dimensional** coordinate `valid_time = time + step`.
 
-`flatten_accumulated` la riduce a un unico asse ordinato:
+`flatten_accumulated` reduces it to a single ordered axis:
 
-1. `stack` fonde `(time, step)` in un asse unico;
-2. `swap_dims` lo sostituisce con `valid_time`;
-3. `sortby` ordina cronologicamente;
-4. gli istanti duplicati vengono rimossi tenendo il primo;
-5. **`transpose` impone l'ordine `(valid_time, latitude, longitude)`**.
+1. `stack` merges `(time, step)` into a single axis;
+2. `swap_dims` replaces it with `valid_time`;
+3. `sortby` orders chronologically;
+4. duplicate instants are removed keeping the first;
+5. **`transpose` imposes the order `(valid_time, latitude, longitude)`**.
 
-Il punto 5 non è cosmetico. `stack` colloca il nuovo asse in **ultima** posizione, quindi
-senza transpose gli array escono come `(latitude, longitude, valid_time)` e ogni
-indicizzazione temporale seleziona in realtà la latitudine. Questo difetto si è
-manifestato come `IndexError: index 261 is out of bounds` ed è coperto da un test
-dedicato.
+Point 5 is not cosmetic. `stack` places the new axis in **last** position, so
+without transpose the arrays come out as `(latitude, longitude, valid_time)` and every
+time indexing actually selects the latitude. This defect showed up
+as `IndexError: index 261 is out of bounds` and is covered by a dedicated
+test.
 
-Fatti verificati sui file reali: 756 istanti validi per un mese di 31 giorni, **zero
-duplicati**, tutte le 24 ore presenti. Le due corse quotidiane si affiancano senza
-sovrapporsi.
+Facts verified on the real files: 756 valid instants for a month of 31 days, **zero
+duplicates**, all 24 hours present. The two daily runs sit side by side without
+overlapping.
 
-### 3.4 La finestra di accumulo
+### 3.4 The accumulation window
 
-Precipitazione e neve non hanno un valore "istantaneo": hanno senso solo su un
-intervallo. Ogni slot riceve la somma delle **8 ore centrate su di sé**:
+Precipitation and snow do not have an "instantaneous" value: they only make sense over an
+interval. Every slot receives the sum of the **8 hours centred on it**:
 
-| Slot | Ore sommate |
+| Slot | Hours summed |
 |---|---|
 | 06 UTC | 03–10 |
 | 12 UTC | 09–16 |
 | 18 UTC | 15–22 |
 
-Tre finestre da 8 ore coprono 20 delle 24 ore del giorno. La scelta è vincolata da una
-proprietà che semplifica tutto: **nessuna finestra attraversa la mezzanotte**, quindi ogni
-mese è autosufficiente e si può ingerire senza leggere il mese precedente o successivo.
+Three windows of 8 hours cover 20 of the 24 hours of the day. The choice is constrained by a
+property that simplifies everything: **no window crosses midnight**, so every
+month is self-sufficient and can be ingested without reading the previous or following month.
 
-L'aggregazione è stata verificata ricalcolandola in modo indipendente dal GRIB per uno
-slot: **differenza massima 0,0**.
+The aggregation was verified by recomputing it independently from the GRIB for one
+slot: **maximum difference 0,0**.
 
-### 3.5 Controlli di qualità
+### 3.5 Quality checks
 
-Per ogni slot e variabile, `compute_stats` registra minimo, massimo, media, numero di
-valori validi e di NaN in `slot_stats.parquet`.
+For every slot and variable, `compute_stats` records minimum, maximum, mean, number of
+valid values and of NaN in `slot_stats.parquet`.
 
-Il catalogo marca `usable = false` se un mese non è stato ingerito **o** se contiene
-valori non finiti. Uno slot inutilizzabile propagherebbe NaN a tutti i campioni che lo
-contengono, quindi il filtro è a monte del dataset di addestramento.
+The catalogue marks `usable = false` if a month was not ingested **or** if it contains
+non-finite values. An unusable slot would propagate NaN to all the samples that
+contain it, so the filter is upstream of the training dataset.
 
-Verifica di plausibilità fisica su gennaio 2024, tutte le variabili in range:
+Physical plausibility check on January 2024, all variables in range:
 
-| Variabile | Minimo | Massimo | Media |
+| Variable | Minimum | Maximum | Mean |
 |---|---|---|---|
 | `t2m` (K) | 217,1 | 313,2 | 281,0 |
 | `msl` (Pa) | 93 876 | 104 809 | 101 379 |
@@ -165,154 +165,154 @@ Verifica di plausibilità fisica su gennaio 2024, tutte le variabili in range:
 | `tp` (m/8h) | 0,0 | 0,070 | 0,0007 |
 | `sf` (m/8h) | 0,0 | 0,049 | 0,0002 |
 
-### 3.6 Un'anomalia reale: `sf > tp`
+### 3.6 A real anomaly: `sf > tp`
 
-Fisicamente la neve, espressa in equivalente in acqua, non può superare la
-precipitazione totale. Nei dati succede nel **12,26 %** dei punti.
+Physically snow, expressed as water equivalent, cannot exceed total
+precipitation. In the data it happens at **12,26 %** of the points.
 
-Non è un difetto dell'ingestione: è **rumore di quantizzazione del GRIB**, che comprime i
-valori in interi scalati. `tp` e `sf` sono impacchettati in modo indipendente, quindi
-quando nevica puro (`sf ≈ tp`) l'arrotondamento può far superare `tp`. Misure:
+It is not a defect of the ingestion: it is **GRIB quantization noise**, which compresses the
+values into scaled integers. `tp` and `sf` are packed independently, so
+when it snows purely (`sf ≈ tp`) the rounding can make it exceed `tp`. Measurements:
 
-- violazione massima: **0,0055 mm**;
-- rapporto `sf/tp` massimo: **1,043**;
-- dove `tp = 0`, `sf` massimo è 0,005 mm.
+- maximum violation: **0,0055 mm**;
+- maximum `sf/tp` ratio: **1,043**;
+- where `tp = 0`, the maximum `sf` is 0,005 mm.
 
-L'ingestione **non corregge** il dato, per restare fedele alla sorgente. La correzione
-appartiene alla costruzione del target, dove il rapporto viene limitato a [0, 1] e
-definito solo sopra la soglia di 0,1 mm.
+The ingestion **does not correct** the data, in order to stay faithful to the source. The correction
+belongs to the construction of the target, where the ratio is clipped to [0, 1] and
+defined only above the threshold of 0,1 mm.
 
-### 3.7 I quattordici campi invarianti, verificati uno per uno
+### 3.7 The fourteen invariant fields, verified one by one
 
-I descrittori di superficie sono stati scaricati in un'unica richiesta da 4,0 MB
-(`static.grib`, un solo istante) e letti con `tmp/diagnostica/verifica_statici.py`. Tutti
-e quattordici sono presenti sulla griglia 261x401. Intervalli misurati:
+The surface descriptors were downloaded in a single request of 4,0 MB
+(`static.grib`, a single instant) and read with `tmp/diagnostica/verifica_statici.py`. All
+fourteen are present on the 261x401 grid. Measured ranges:
 
-| Campo | Significato | Minimo | Massimo | Media |
+| Field | Meaning | Minimum | Maximum | Mean |
 |---|---|---|---|---|
-| `lsm` | frazione di terra | 0 | 1 | 0,5200 |
-| `z` | geopotenziale (m2 s-2) | -1260,77 | 31544,98 | 2588,78 |
-| `slt` | tipo di suolo (classi) | 0 | 7 | 1,11 |
-| `cvh` | frazione vegetazione alta | 0 | 1 | 0,1335 |
-| `cvl` | frazione vegetazione bassa | 0 | 1 | 0,1921 |
-| `tvh` | tipo vegetazione alta | 0 | 19 | 4,05 |
-| `tvl` | tipo vegetazione bassa | 0 | 17 | 2,26 |
-| `cl` | frazione acque interne | 0 | 1 | 0,0165 |
-| `dl` | profondita' acque interne (m) | 0,50 | 6218,29 | 1129,69 |
-| `sdor` | dispersione orografia (m) | 0 | 672,35 | 30,53 |
-| `isor` | anisotropia orografia | 0 | 0,9869 | 0,2712 |
-| `anor` | orientamento orografia (rad) | -1,5578 | 1,5627 | 0,3823 |
-| `slor` | pendenza orografia | 0,0001 | 0,1177 | 0,0051 |
-| `sdfor` | dispersione orografia filtrata (m) | 0 | 526,94 | 21,09 |
+| `lsm` | land fraction | 0 | 1 | 0,5200 |
+| `z` | geopotential (m2 s-2) | -1260,77 | 31544,98 | 2588,78 |
+| `slt` | soil type (classes) | 0 | 7 | 1,11 |
+| `cvh` | high vegetation fraction | 0 | 1 | 0,1335 |
+| `cvl` | low vegetation fraction | 0 | 1 | 0,1921 |
+| `tvh` | high vegetation type | 0 | 19 | 4,05 |
+| `tvl` | low vegetation type | 0 | 17 | 2,26 |
+| `cl` | inland water fraction | 0 | 1 | 0,0165 |
+| `dl` | inland water depth (m) | 0,50 | 6218,29 | 1129,69 |
+| `sdor` | orography dispersion (m) | 0 | 672,35 | 30,53 |
+| `isor` | orography anisotropy | 0 | 0,9869 | 0,2712 |
+| `anor` | orography orientation (rad) | -1,5578 | 1,5627 | 0,3823 |
+| `slor` | orography slope | 0,0001 | 0,1177 | 0,0051 |
+| `sdfor` | filtered orography dispersion (m) | 0 | 526,94 | 21,09 |
 
-Due valori sembrano anomali e vanno spiegati, non corretti.
+Two values look anomalous and must be explained, not corrected.
 
-**Il geopotenziale e' negativo dove c'e' terra sotto il livello del mare.** Il minimo
--1260,77 m2 s-2 corrisponde a -128,6 m: e' terreno reale, non un errore di segno. Il
-dominio comprende la depressione del Caspio e altre aree sotto il livello del mare.
+**The geopotential is negative where there is land below sea level.** The minimum
+-1260,77 m2 s-2 corresponds to -128,6 m: it is real terrain, not a sign error. The
+domain includes the Caspian depression and other areas below sea level.
 
-**`dl` non e' un campo utilizzabile come canale grezzo.** Una profondita' media di 1130 m
-e' impossibile per le acque interne europee, e il massimo di 6218 m non appartiene a
-nessun lago: ERA5 definisce `dl` **su tutta la griglia**, con valori di riempimento dove
-non ci sono laghi, e la frazione `cl` ha media 0,0165, cioe' il campo e' significativo su
-meno del 2% dei punti. Usato cosi' come sta, `dl` inietterebbe un segnale di "acqua
-profonda" sopra l'oceano e sopra la terraferma. Va quindi usato **solo moltiplicato per
-`cl`**, oppure lasciato fuori: per questo non entra nella lista predefinita dei campi
-statici, mentre gli altri tredici sono utilizzabili direttamente.
+**`dl` is not a field usable as a raw channel.** A mean depth of 1130 m
+is impossible for European inland waters, and the maximum of 6218 m does not belong to
+any lake: ERA5 defines `dl` **over the whole grid**, with fill values where
+there are no lakes, and the fraction `cl` has mean 0,0165, that is the field is meaningful over
+less than 2% of the points. Used as it stands, `dl` would inject a "deep water"
+signal over the ocean and over land. It must therefore be used **only multiplied by
+`cl`**, or left out: for this reason it does not enter the default list of static
+fields, while the other thirteen are usable directly.
 
 ---
 
-## 4. Le tabelle Parquet
+## 4. The Parquet tables
 
-| Tabella | Contenuto | Ruolo |
+| Table | Content | Role |
 |---|---|---|
-| `slots` | un record per slot: istante, anno, mese, ora, `usable`, `split` indicativo | catalogo generale |
-| `slot_stats` | statistiche per slot e variabile | controllo qualità |
-| `folds` | **autorevole**: `fold`, `split`, `slot_index`, `is_sample_start` | divisione dei dati |
-| `variables` | metadati delle variabili: unità, famiglia, ruolo | documentazione |
-| `downloads` | esito di ogni download | tracciamento |
+| `slots` | one record per slot: instant, year, month, hour, `usable`, indicative `split` | general catalogue |
+| `slot_stats` | statistics per slot and variable | quality check |
+| `folds` | **authoritative**: `fold`, `split`, `slot_index`, `is_sample_start` | data split |
+| `variables` | variable metadata: unit, family, role | documentation |
+| `downloads` | outcome of every download | tracking |
 
-### Perché i fold hanno una tabella propria
+### Why the folds have a table of their own
 
-Con la validazione a finestra mobile, **lo stesso slot cambia split da un fold all'altro**:
-ciò che è test nel fold 0 diventa train nel fold 3. Una singola colonna `split` non può
-rappresentarlo, quindi `folds.parquet` è la fonte autorevole e la colonna `split` di
-`slots` è solo indicativa. Un test verifica proprio che esista almeno uno slot con più
+With rolling window validation, **the same slot changes split from one fold to another**:
+what is test in fold 0 becomes train in fold 3. A single `split` column cannot
+represent that, so `folds.parquet` is the authoritative source and the `split` column of
+`slots` is only indicative. A test checks precisely that at least one slot exists with more than one
 split.
 
-`is_sample_start` è vero solo se **tutti** i 30 slot della finestra (21 di input + 9 di
-target) sono utilizzabili. Il dataset di addestramento legge solo questa colonna.
+`is_sample_start` is true only if **all** the 30 slots of the window (21 of input + 9 of
+target) are usable. The training dataset reads only this column.
 
 ---
 
-## 5. Come eseguirlo
+## 5. How to run it
 
 ```bash
-# 1. Scaricare i GRIB (lungo: ~9 min per mese)
-uv run python scripts/download_era5.py --dry-run        # anteprima
+# 1. Download the GRIB files (long: ~9 min per month)
+uv run python scripts/download_era5.py --dry-run        # preview
 uv run python scripts/download_era5.py --from-month 2025-01
 
-# 2. Vedere cosa è pronto
+# 2. See what is ready
 uv run python scripts/ingest_era5.py --list
 
-# 3. Ingerire
-uv run python scripts/ingest_era5.py                    # tutti i mesi disponibili
-uv run python scripts/ingest_era5.py --month 2024-01    # uno solo
+# 3. Ingest
+uv run python scripts/ingest_era5.py                    # all available months
+uv run python scripts/ingest_era5.py --month 2024-01    # a single one
 ```
 
-L'ingestione è **idempotente**: rieseguirla su un mese già fatto lo riscrive con lo
-stesso risultato. `--recreate-store` azzera lo store e obbliga a reingerire tutto; serve
-solo se cambia la configurazione della griglia o del periodo.
+The ingestion is **idempotent**: rerunning it on a month already done rewrites it with the
+same result. `--recreate-store` clears the store and forces reingesting everything; it is needed
+only if the configuration of the grid or of the period changes.
 
-### Costi misurati
+### Measured costs
 
-| Operazione | Tempo | Spazio |
+| Operation | Time | Space |
 |---|---|---|
-| Download di un mese | ~9 min | 387 MB (GRIB) |
-| Ingestione di un mese | 17,7 s | ~150 MB (Zarr) |
-| Periodo completo, 32 mesi | ~4,7 h | ~12,4 GB GRIB + ~4,6 GB Zarr |
+| Download of one month | ~9 min | 387 MB (GRIB) |
+| Ingestion of one month | 17,7 s | ~150 MB (Zarr) |
+| Complete period, 32 months | ~4,7 h | ~12,4 GB GRIB + ~4,6 GB Zarr |
 
-Lo Zarr è più piccolo del GRIB perché è una **riduzione**: conserva 3 slot al giorno
-invece di 24 campi orari, e le cumulate già sommate sulla finestra.
-
----
-
-## 6. Come estenderlo
-
-**Aggiungere una variabile**: dichiararla in `src/dwf/variables.py` con nome CDS e nome
-GRIB, aggiungerla alla lista in `configs/default.yaml`, riscaricare e reingerire con
-`--recreate-store` (lo store ha un array per variabile, deciso alla creazione).
-
-**Allungare il periodo**: modificare `time.start` / `time.end` nella configurazione,
-scaricare i mesi nuovi, reingerire con `--recreate-store`. Attenzione: cambiare il
-periodo cambia anche il numero di fold.
-
-**Cambiare la finestra di accumulo**: `time.accum_window_hours`. Il vincolo di non
-attraversare la mezzanotte è verificato da un test, che fallirà se la finestra diventa
-troppo ampia per gli slot configurati.
-
-**Cambiare la regione**: `region` nella configurazione. Richiede di riscaricare tutto.
+The Zarr is smaller than the GRIB because it is a **reduction**: it keeps 3 slots per day
+instead of 24 hourly fields, and the accumulations already summed over the window.
 
 ---
 
-## 7. Difetti trovati e risolti durante lo sviluppo
+## 6. How to extend it
 
-Elenco onesto, utile a chi debuggherà il codice in futuro:
+**Adding a variable**: declare it in `src/dwf/variables.py` with CDS name and GRIB
+name, add it to the list in `configs/default.yaml`, download again and reingest with
+`--recreate-store` (the store has one array per variable, decided at creation).
 
-| Difetto | Sintomo | Causa |
+**Lengthening the period**: change `time.start` / `time.end` in the configuration,
+download the new months, reingest with `--recreate-store`. Careful: changing the
+period also changes the number of folds.
+
+**Changing the accumulation window**: `time.accum_window_hours`. The constraint of not
+crossing midnight is verified by a test, which will fail if the window becomes
+too wide for the configured slots.
+
+**Changing the region**: `region` in the configuration. It requires downloading everything again.
+
+---
+
+## 7. Defects found and solved during development
+
+An honest list, useful to whoever will debug the code in the future:
+
+| Defect | Symptom | Cause |
 |---|---|---|
-| Ordine degli assi | `IndexError: index 261 out of bounds` | `stack` mette il nuovo asse per ultimo |
-| Fusi orari | `UserWarning: no explicit representation of timezones` | numpy scartava il fuso in silenzio |
-| Mese fuori periodo | Restituiva il mese intero | Confronto sbagliato dei limiti in `days_for_month` |
-| Destinazione dati | I GB finivano in `Data/` tracciata da git | Windows ignora la differenza di maiuscole |
+| Axis order | `IndexError: index 261 out of bounds` | `stack` puts the new axis last |
+| Time zones | `UserWarning: no explicit representation of timezones` | numpy discarded the time zone silently |
+| Month outside the period | Returned the whole month | Wrong comparison of the bounds in `days_for_month` |
+| Data destination | The GB ended up in `Data/`, tracked by git | Windows ignores the case difference |
 
 ---
 
-## 8. Cosa non è ancora fatto
+## 8. What is not done yet
 
-L'ingestione è completa e verificata. Restano da costruire, a valle:
+The ingestion is complete and verified. Still to be built, downstream:
 
-- `features.py`: canali derivati (variazioni temporali, codifiche stagionali, statici);
-- `dataset.py`: dataset torch che legge `folds.parquet` e ritaglia le finestre;
-- normalizzazione calcolata **solo sul train** di ciascun fold, per non far filtrare
-  informazione dal futuro.
+- `features.py`: derived channels (time changes, seasonal encodings, static);
+- `dataset.py`: torch dataset that reads `folds.parquet` and crops the windows;
+- normalization computed **only on the train** of each fold, so as not to leak
+  information from the future.

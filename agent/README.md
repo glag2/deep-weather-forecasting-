@@ -1,38 +1,38 @@
-# Cartella dell'agente
+# Agent folder
 
-Documenti destinati a chi **sviluppa** il progetto, umano o agente che sia. Non sono
-materiale di lettura per chi vuole soltanto usare il previsore: quello sta nella
-radice (`README.md`) e in `docs/`.
+Documents meant for whoever **develops** the project, human or agent. They are not
+reading material for someone who only wants to use the forecaster: that lives in the
+root (`README.md`) and in `docs/`.
 
-La separazione e' voluta. Un documento che deve spiegare a un utente come ottenere una
-previsione e un documento che deve permettere a un agente di riprendere il lavoro a
-freddo hanno lettori, tempi di vita e criteri di verita' diversi: tenerli insieme
-significa che nessuno dei due resta aggiornato.
+The separation is deliberate. A document that has to explain to a user how to get a
+forecast and a document that has to let an agent pick the work back up cold have
+different readers, different lifetimes and different criteria of truth: keeping them
+together means neither one stays up to date.
 
-## Che cosa leggere, e in che ordine
+## What to read, and in what order
 
-Se stai riprendendo il progetto senza aver visto nulla di quanto e' successo prima,
-leggi in questa sequenza:
+If you are picking the project back up without having seen anything of what happened
+before, read in this sequence:
 
-| ordine | file | risponde a |
+| order | file | answers |
 |---|---|---|
-| 1 | [`STATO.md`](STATO.md) | dove siamo adesso, che cosa gira, che cosa e' rotto |
-| 2 | [`PIANO.md`](PIANO.md) | che cosa va fatto, in che ordine, con quale criterio di completamento |
-| 3 | [`CONVENZIONI.md`](CONVENZIONI.md) | come si lavora qui, e quali trappole hanno gia' fatto perdere tempo |
-| 4 | [`DECISIONI.md`](DECISIONI.md) | perche' le cose sono come sono, con le misure che lo dimostrano |
+| 1 | [`STATE.md`](STATE.md) | where we are now, what is running, what is broken |
+| 2 | [`PLAN.md`](PLAN.md) | what has to be done, in what order, with which completion criterion |
+| 3 | [`CONVENTIONS.md`](CONVENTIONS.md) | how work is done here, and which traps have already cost time |
+| 4 | [`DECISIONS.md`](DECISIONS.md) | why things are the way they are, with the measurements that prove it |
 
-`STATO.md` va riscritto ogni volta che qualcosa cambia davvero. `PIANO.md` va aggiornato
-segnando i passi conclusi e aggiungendo quelli emersi. `DECISIONI.md` e' in sola
-aggiunta: una decisione superata si annota come superata, non si cancella.
+`STATE.md` must be rewritten every time something really changes. `PLAN.md` must be
+updated by marking the finished steps and adding the ones that come up. `DECISIONS.md`
+is append only: a superseded decision is annotated as superseded, not deleted.
 
-## Regola che vale piu' delle altre
+## The rule that counts more than the others
 
-Le affermazioni in questi documenti devono essere **verificabili**. Se un numero e'
-scritto qui, da qualche parte esiste il comando che lo produce, ed e' indicato. Se una
-cosa non e' stata misurata, va scritto che non e' stata misurata.
+The statements in these documents must be **verifiable**. If a number is written here,
+somewhere there is the command that produces it, and it is stated. If something has not
+been measured, it must be written that it has not been measured.
 
-Il progetto ha gia' cambiato direzione tre volte perche' una misura ha smentito
-un'aspettativa ragionevole: la persistenza diurna che batte il modello, le architetture
-indistinguibili dal rumore fra semi, la latenza di ERA5 confermata solo dopo averla
-sondata. Un documento che riporta impressioni invece di misure avrebbe nascosto tutte e
-tre.
+The project has already changed direction three times because a measurement contradicted
+a reasonable expectation: the diurnal persistence beating the model, the architectures
+indistinguishable from the noise between seeds, the ERA5 latency confirmed only after
+probing it. A document reporting impressions instead of measurements would have hidden
+all three.

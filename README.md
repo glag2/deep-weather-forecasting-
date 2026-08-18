@@ -1,43 +1,43 @@
-# Previsione meteo con deep learning su rianalisi ERA5
+# Weather forecasting with deep learning on ERA5 reanalysis
 
-Previsione dei **3 giorni successivi** (mattina, mezzogiorno, sera) sull'area
-euro-atlantica, a partire dai **7 giorni precedenti** di rianalisi ERA5, con una rete
-convoluzionale scritta da zero.
+Forecast of the **next 3 days** (morning, midday, evening) over the
+Euro-Atlantic area, starting from the **previous 7 days** of ERA5 reanalysis, with a
+convolutional network written from scratch.
 
-Variabili previste: **temperatura**, **precipitazione**, **neve**, ciascuna con la
-propria **incertezza** calibrata.
+Forecast variables: **temperature**, **precipitation**, **snow**, each with its own
+calibrated **uncertainty**.
 
-![Esempio di campo ERA5: temperatura a 2 m](image/README/1730719737389.png)
+![Example of an ERA5 field: 2 m temperature](image/README/1730719737389.png)
 
-## Dominio
+## Domain
 
 | | |
 |---|---|
 | Area | lat 10 N - 75 N, lon 40 W - 60 E |
-| Risoluzione | 0.25 gradi (nativa ERA5) |
-| Griglia | **261 x 401 = 104.661 punti** |
-| Slot giornalieri | 06, 12, 18 UTC |
-| Input | 21 slot (7 giorni) |
-| Output | 9 slot (3 giorni) |
+| Resolution | 0.25 degrees (ERA5 native) |
+| Grid | **261 x 401 = 104.661 points** |
+| Daily slots | 06, 12, 18 UTC |
+| Input | 21 slots (7 days) |
+| Output | 9 slots (3 days) |
 
 Dataset: [ERA5 hourly data on single levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels)
 
-## Requisiti
+## Requirements
 
 - Python 3.12
-- [`uv`](https://docs.astral.sh/uv/) per la gestione dell'ambiente
-- Un account Copernicus CDS (gratuito)
-- Nessuna GPU necessaria: il training e' pensato per CPU
+- [`uv`](https://docs.astral.sh/uv/) for environment management
+- A Copernicus CDS account (free)
+- No GPU needed: training is designed for CPU
 
-## Installazione
+## Installation
 
 ```bash
 uv sync --extra notebooks
 ```
 
-Su connessioni lente il download dei wheel piu' grossi (`torch`, `polars`, `scipy`)
-puo' superare il timeout di rete predefinito di `uv`, che e' di 30 secondi. In quel
-caso:
+On slow connections the download of the largest wheels (`torch`, `polars`, `scipy`)
+can exceed the default network timeout of `uv`, which is 30 seconds. In that
+case:
 
 ```bash
 # Linux / macOS
@@ -49,199 +49,199 @@ UV_HTTP_TIMEOUT=600 uv sync --extra notebooks
 $env:UV_HTTP_TIMEOUT=600; uv sync --extra notebooks
 ```
 
-## Credenziali CDS
+## CDS credentials
 
-Il progetto legge le credenziali da variabili d'ambiente, con lo stesso ordine di
-precedenza usato da `cdsapi`: prima l'ambiente, poi `~/.cdsapirc`.
+The project reads credentials from environment variables, with the same order of
+precedence used by `cdsapi`: first the environment, then `~/.cdsapirc`.
 
-**Variabili richieste:**
+**Required variables:**
 
-| Variabile | Valore |
+| Variable | Value |
 |---|---|
 | `CDSAPI_URL` | `https://cds.climate.copernicus.eu/api` |
-| `CDSAPI_KEY` | il proprio Personal Access Token |
+| `CDSAPI_KEY` | your own Personal Access Token |
 
-**Procedura:**
+**Procedure:**
 
-1. Registrarsi su <https://cds.climate.copernicus.eu> e autenticarsi.
-2. Aprire <https://cds.climate.copernicus.eu/how-to-api>: la pagina mostra il proprio
+1. Register at <https://cds.climate.copernicus.eu> and log in.
+2. Open <https://cds.climate.copernicus.eu/how-to-api>: the page shows your own
    Personal Access Token.
-3. Accettare i *Terms of Use* del dataset. Passaggio separato e facile da dimenticare:
-   senza di esso ogni richiesta API fallisce anche con un token valido. Si trova in
-   fondo al form nella scheda *Download* di
+3. Accept the dataset *Terms of Use*. This is a separate step and easy to forget:
+   without it every API request fails even with a valid token. It is at the
+   bottom of the form in the *Download* tab of
    <https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels>,
-   oppure si puo' accettare via API con `--accept-licences` (vedi sotto).
-4. Creare nella radice del progetto un file `.env` con le due variabili:
+   or it can be accepted via API with `--accept-licences` (see below).
+4. Create in the project root a `.env` file with the two variables:
 
    ```
    CDSAPI_URL=https://cds.climate.copernicus.eu/api
-   CDSAPI_KEY=il-proprio-token
+   CDSAPI_KEY=your-own-token
    ```
 
-`.env` e' escluso dal versioning. Non va committato, ne' incollato in chat, log o
-notebook: se una chiave esce dal proprio archivio va considerata compromessa e
-rigenerata dal profilo CDS.
+`.env` is excluded from versioning. It must not be committed, nor pasted into chat, logs or
+notebooks: if a key leaves your own storage it must be considered compromised and
+regenerated from the CDS profile.
 
-> Su Windows, Notepad e `Set-Content -Encoding utf8` di PowerShell 5.1 scrivono un
-> BOM UTF-8 in testa al file. Il progetto lo gestisce leggendo con `utf-8-sig`, ma
-> molti altri strumenti no.
+> On Windows, Notepad and PowerShell 5.1 `Set-Content -Encoding utf8` write a
+> UTF-8 BOM at the head of the file. The project handles it by reading with `utf-8-sig`, but
+> many other tools do not.
 
-### Verifica dell'accesso
+### Checking access
 
-Prima di accodare decine di richieste conviene controllare che tutto sia a posto. Lo
-script distingue i tre motivi per cui un download fallisce, che altrimenti si
-confondono in un unico errore HTTP:
+Before queueing dozens of requests it is worth checking that everything is in order. The
+script distinguishes the three reasons why a download fails, which otherwise
+blend into a single HTTP error:
 
 ```bash
 uv run python scripts/check_cds_access.py
 uv run python scripts/check_cds_access.py --accept-licences
 ```
 
-Riporta anche **l'ultima data ERA5 effettivamente disponibile**, cercandola a ritroso
-da oggi invece di assumere una latenza fissa.
+It also reports **the last ERA5 date actually available**, searching backwards
+from today instead of assuming a fixed latency.
 
-## Configurazione
+## Configuration
 
-Tutto e' dichiarato in [`configs/default.yaml`](configs/default.yaml) e validato a
-runtime: area allineata alla griglia, variabili di tipo coerente, target presenti tra
-le variabili scaricate, percorsi confinati sotto la cartella dati.
+Everything is declared in [`configs/default.yaml`](configs/default.yaml) and validated at
+runtime: area aligned to the grid, variables of consistent type, targets present among
+the downloaded variables, paths confined under the data folder.
 
-### Validazione a finestra mobile
+### Rolling window validation
 
-Il modello non viene valutato su un unico blocco finale. Un test contiguo cadrebbe
-tutto nella coda del periodo, che e' estiva: la neve non sarebbe misurabile e la
-temperatura verrebbe valutata su un solo regime meteorologico.
+The model is not evaluated on a single final block. A contiguous test would fall
+entirely in the tail of the period, which is summer: snow would not be measurable and
+temperature would be evaluated on a single weather regime.
 
-La suddivisione usa quindi la **rolling origin validation**: l'origine avanza nel
-tempo e ogni fold ha il proprio train, validation e test, sempre in quest'ordine
-cronologico. Con la configurazione di riferimento entrano 6 fold i cui blocchi di test
-coprono **tutti i dodici mesi**. Il costo e' che il training va ripetuto per ogni
-fold; `split.n_folds` permette di limitarli durante lo sviluppo, e
-`split.mode: chronological` torna allo split a blocco unico.
+The split therefore uses **rolling origin validation**: the origin advances in
+time and every fold has its own train, validation and test, always in this
+chronological order. With the reference configuration there are 6 folds whose test blocks
+cover **all twelve months**. The cost is that training must be repeated for each
+fold; `split.n_folds` allows limiting them during development, and
+`split.mode: chronological` goes back to the single-block split.
 
-## Struttura
+## Structure
 
 ```
-configs/default.yaml       configurazione di riferimento
+configs/default.yaml       reference configuration
 src/dwf/
-  variables.py             registro variabili ERA5 (nome CDS <-> short name GRIB)
-  slots.py                 slot temporali, finestre di accumulo, split senza leakage
-  config.py                configurazione validata
-  credentials.py           credenziali CDS, senza mai esporne il valore
-  tables.py                layer Polars/Parquet con schemi verificati
-  data/                    scarico, ingestione, feature, dataset
-  models/                  rete convoluzionale e teste probabilistiche
+  variables.py             ERA5 variable registry (CDS name <-> GRIB short name)
+  slots.py                 time slots, accumulation windows, leakage-free split
+  config.py                validated configuration
+  credentials.py           CDS credentials, never exposing their value
+  tables.py                Polars/Parquet layer with verified schemas
+  data/                    download, ingestion, features, dataset
+  models/                  convolutional network and probabilistic heads
 scripts/
-  check_cds_access.py      diagnosi di accesso al CDS
-  download_era5.py         scarico del periodo configurato, ripartibile
-  benchmark_model.py       costo del modello su CPU
-tests/                     suite pytest
-datasets/                  (ignorata da git) GRIB, Zarr, tabelle, artefatti
+  check_cds_access.py      CDS access diagnosis
+  download_era5.py         download of the configured period, resumable
+  benchmark_model.py       model cost on CPU
+tests/                     pytest suite
+datasets/                  (ignored by git) GRIB, Zarr, tables, artifacts
 ```
 
-La radice dei dati e' `datasets/` e non `data/`: su Windows `data` verrebbe risolto
-nella cartella `Data/` gia' presente nel repository, mescolando decine di GB generati
-ai file tracciati, mentre su Linux e in Docker resterebbe una cartella distinta. Il
-nome e' configurabile con `paths.data_root`.
+The data root is `datasets/` and not `data/`: on Windows `data` would resolve
+to the `Data/` folder already present in the repository, mixing tens of generated GB
+with tracked files, while on Linux and in Docker it would stay a separate folder. The
+name is configurable with `paths.data_root`.
 
-## Scarico dei dati
+## Downloading the data
 
 ```bash
-uv run python scripts/download_era5.py --dry-run   # mostra il piano, non invia nulla
-uv run python scripts/download_era5.py --limit 2   # un solo mese, per misurare
-uv run python scripts/download_era5.py             # tutto il periodo
+uv run python scripts/download_era5.py --dry-run   # shows the plan, sends nothing
+uv run python scripts/download_era5.py --limit 2   # a single month, to measure
+uv run python scripts/download_era5.py             # the whole period
 ```
 
-Il download e' **ripartibile**: i file gia' presenti e non vuoti vengono saltati, e
-ogni richiesta scrive su un file `.partial` rinominato solo a scaricamento completato,
-cosi' un'interruzione non lascia un GRIB troncato che sembrerebbe valido. Le richieste
-sono sequenziali perche' il CDS limita quelle concorrenti per utente.
+The download is **resumable**: files already present and not empty are skipped, and
+every request writes to a `.partial` file renamed only once the download is complete,
+so an interruption does not leave a truncated GRIB that would look valid. Requests
+are sequential because the CDS limits concurrent ones per user.
 
-I dati sono organizzati su due livelli: **Zarr** per i tensori numerici, su cui il
-training fa accesso casuale a finestre spaziotemporali, e **Polars/Parquet** come
-registro dei dati puliti (catalogo degli slot, controlli qualita', statistiche di
-normalizzazione, metriche, calibrazione, previsione finale).
+Data is organized on two levels: **Zarr** for the numeric tensors, on which
+training performs random access to spatiotemporal windows, and **Polars/Parquet** as
+the registry of clean data (slot catalogue, quality checks, normalization
+statistics, metrics, calibration, final forecast).
 
-## Come funziona la pipeline
+## How the pipeline works
 
-Ogni passo legge quello che il precedente ha scritto. Si possono eseguire singolarmente.
+Every step reads what the previous one wrote. They can be run individually.
 
-| # | Comando | Cosa fa |
+| # | Command | What it does |
 |---|---|---|
-| 1 | `scripts/check_cds_access.py` | Verifica token, licenze e ultima data ERA5 disponibile. |
-| 2 | `scripts/download_era5.py` | Scarica i GRIB mese per mese in `datasets/raw/`. Ripartibile. |
-| 3 | `scripts/ingest_era5.py` | Converte i GRIB in un unico store Zarr `(slot, 261, 401)` e registra gli slot in Parquet. Deaccumula pioggia e neve. |
-| 4 | `scripts/analyze_data.py` | Analisi esplorativa dello store: copertura, distribuzioni, prevedibilita'. Scrive `docs/DATA_ANALYSIS.md`. |
-| 5 | `scripts/screen_features.py` | Misura quali famiglie di canali aiutano a prevedere il **cambiamento**. Scrive `docs/FEATURES.md`. |
-| 6 | `scripts/screen_input_days.py` | Confronta 3, 7, 10, 14 giorni di storico. Scrive `docs/INPUT_DAYS.md`. |
-| 7 | `scripts/compare_variants.py` | Confronta le cinque architetture a parita' di protocollo. Scrive `docs/VARIANTS.md`. |
-| 8 | `scripts/train_model.py --fold 0` | Addestra un fold. Salva pesi e statistiche in `models/fold_00/`. |
-| 9 | `scripts/evaluate_model.py --fold 0 --split test` | Metriche sul test, calibrazione delle probabilita', scelta delle soglie, confronto con le persistenze. |
-| 10 | `scripts/predict_forecast.py --fold 0` | Previsione a 3 giorni sull'intera griglia, in Parquet. |
-| 11 | `scripts/report_forecast.py --fold 0` | Report PDF di 8 pagine con le mappe. |
-| 12 | `scripts/refresh_data.py` | Scarica e ingerisce solo cio' che manca, per aggiornare senza rifare tutto. |
+| 1 | `scripts/check_cds_access.py` | Checks token, licences and last available ERA5 date. |
+| 2 | `scripts/download_era5.py` | Downloads the GRIB files month by month into `datasets/raw/`. Resumable. |
+| 3 | `scripts/ingest_era5.py` | Converts the GRIB files into a single Zarr store `(slot, 261, 401)` and records the slots in Parquet. De-accumulates rain and snow. |
+| 4 | `scripts/analyze_data.py` | Exploratory analysis of the store: coverage, distributions, predictability. Writes `docs/DATA_ANALYSIS.md`. |
+| 5 | `scripts/screen_features.py` | Measures which channel families help to predict **change**. Writes `docs/FEATURES.md`. |
+| 6 | `scripts/screen_input_days.py` | Compares 3, 7, 10, 14 days of history. Writes `docs/INPUT_DAYS.md`. |
+| 7 | `scripts/compare_variants.py` | Compares the five architectures under the same protocol. Writes `docs/VARIANTS.md`. |
+| 8 | `scripts/train_model.py --fold 0` | Trains one fold. Saves weights and statistics in `models/fold_00/`. |
+| 9 | `scripts/evaluate_model.py --fold 0 --split test` | Metrics on the test set, probability calibration, threshold selection, comparison with the persistence baselines. |
+| 10 | `scripts/predict_forecast.py --fold 0` | 3-day forecast over the whole grid, in Parquet. |
+| 11 | `scripts/report_forecast.py --fold 0` | 8-page PDF report with the maps. |
+| 12 | `scripts/refresh_data.py` | Downloads and ingests only what is missing, to update without redoing everything. |
 
-In mezzo, i dati passano da queste forme:
+In between, the data passes through these forms:
 
 ```
-GRIB mensili -> store Zarr (slot x 261 x 401) -> finestra di 21 slot
-   -> 245 canali (stato, tendenze, vento, sole, termodinamica, statici)
-   -> rete -> 45 canali di uscita -> 9 slot previsti x 4 grandezze + incertezza
-   -> calibrazione -> Parquet -> PDF
+monthly GRIB -> Zarr store (slot x 261 x 401) -> window of 21 slots
+   -> 245 channels (state, tendencies, wind, sun, thermodynamics, static)
+   -> network -> 45 output channels -> 9 forecast slots x 4 quantities + uncertainty
+   -> calibration -> Parquet -> PDF
 ```
 
-## Prestazioni
+## Performance
 
-Modello valutato sul blocco di **test** del fold 0, mai usato ne' per addestrare ne'
-per scegliere le soglie. Il riferimento e' la **persistenza diurna** (ripetere ieri alla
-stessa ora), che su questo dominio e' un avversario molto forte.
+Model evaluated on the **test** block of fold 0, never used either for training or
+for choosing the thresholds. The reference is the **diurnal persistence** (repeating yesterday at the
+same hour), which on this domain is a very strong opponent.
 
-| Grandezza | Metrica | Modello | Persistenza diurna | Persistenza ingenua |
+| Quantity | Metric | Model | Diurnal persistence | Naive persistence |
 |---|---|---:|---:|---:|
-| Temperatura | RMSE (degC) | **2.92** | 3.16 | 4.73 |
-| Pioggia si/no | F1 | **0.635** | 0.609 | 0.624 |
-| Pioggia si/no | Accuratezza | 0.709 | 0.726 | **0.739** |
-| Neve si/no | F1 | 0.493 | 0.561 | **0.590** |
-| Neve si/no | Accuratezza | 0.847 | 0.919 | **0.925** |
-| Pioggia e neve | F1 macro | 0.564 | 0.585 | **0.607** |
+| Temperature | RMSE (degC) | **2.92** | 3.16 | 4.73 |
+| Rain yes/no | F1 | **0.635** | 0.609 | 0.624 |
+| Rain yes/no | Accuracy | 0.709 | 0.726 | **0.739** |
+| Snow yes/no | F1 | 0.493 | 0.561 | **0.590** |
+| Snow yes/no | Accuracy | 0.847 | 0.919 | **0.925** |
+| Rain and snow | Macro F1 | 0.564 | 0.585 | **0.607** |
 
-241 finestre di test, 9 scadenze ciascuna, dominio intero. Ottenuti con
-`scripts/evaluate_model.py --fold 0 --split test`, che scrive `metrics.parquet`.
+241 test windows, 9 lead times each, whole domain. Obtained with
+`scripts/evaluate_model.py --fold 0 --split test`, which writes `metrics.parquet`.
 
-**Come leggerla.** Sulla temperatura il modello batte la persistenza diurna a **tutte e
-nove le scadenze**, e il vantaggio non e' concentrato sulle prime: 2.02 contro 2.43 degC
-a sei ore, 3.40 contro 3.68 a tre giorni.
+**How to read it.** On temperature the model beats diurnal persistence at **all
+nine lead times**, and the advantage is not concentrated on the first ones: 2.02 against 2.43 degC
+at six hours, 3.40 against 3.68 at three days.
 
-Sulla neve **perde**, e conviene dire perche' invece di nasconderlo. Il modello prevede
-neve troppo spesso: recupera l'82 % dei casi contro il 60 % della persistenza, ma solo
-il 35 % delle sue segnalazioni e' corretto contro il 55 %. La soglia di decisione e'
-scelta sulla validazione, dove rende F1 0.568; sul test scende a 0.493. Cambiarla
-guardando il test sposterebbe il compromesso, ma sarebbe barare.
+On snow it **loses**, and it is better to say why instead of hiding it. The model forecasts
+snow too often: it recovers 82 % of the cases against 60 % for persistence, but only
+35 % of its warnings are correct against 55 %. The decision threshold is
+chosen on validation, where it gives F1 0.568; on the test set it drops to 0.493. Changing it by
+looking at the test set would shift the trade-off, but it would be cheating.
 
-**L'accuratezza sulla neve non va letta come un risultato.** La neve compare nel 9 % dei
-casi, quindi rispondere sempre "no" darebbe 90.9 %: entrambe le persistenze, al 92.5 %,
-superano di poco quella soglia banale. E' la ragione per cui la tabella riporta anche
-F1, che una risposta costante non puo' gonfiare.
+**Snow accuracy must not be read as a result.** Snow appears in 9 % of the
+cases, so always answering "no" would give 90.9 %: both persistence baselines, at 92.5 %,
+exceed that trivial threshold only slightly. This is the reason why the table also reports
+F1, which a constant answer cannot inflate.
 
-Sulla **qualita' della probabilita'**, che e' cio' che serve per decidere, il modello
-vince ovunque, neve compresa: punteggio di Brier 0.181 contro 0.274 sulla pioggia e
-0.066 contro 0.081 sulla neve, con errore di calibrazione 0.053 contro 0.274.
+On the **quality of the probability**, which is what is needed to decide, the model
+wins everywhere, snow included: Brier score 0.181 against 0.274 on rain and
+0.066 against 0.081 on snow, with calibration error 0.053 against 0.274.
 
-**F1 macro** e' la media dei due F1 binari (pioggia e neve). Un F1 unico su tutto il
-modello non avrebbe senso: la temperatura e' continua e non ha una nozione di
-"positivo".
+**Macro F1** is the average of the two binary F1 values (rain and snow). A single F1 over the whole
+model would make no sense: temperature is continuous and has no notion of
+"positive".
 
-## Notebook
+## Notebooks
 
-Generati da `scripts/build_notebooks.py`, quindi non vanno modificati a mano.
+Generated by `scripts/build_notebooks.py`, so they must not be edited by hand.
 
-| Notebook | A cosa risponde |
+| Notebook | What it answers |
 |---|---|
-| `notebooks/01_training.ipynb` | Addestra un fold e mostra perche' la validazione e' a finestra mobile. |
-| `notebooks/02_inference.ipynb` | Produce una previsione e la legge sulle mappe. |
-| `notebooks/03_collaudo.ipynb` | **Collauda un modello addestrato**: coerenza degli artefatti, guadagno per scadenza, controllo dell'obiettivo dei 2 gradi a 24 ore, taratura dell'incertezza, affidabilita' delle probabilita', mappa dell'errore, e il controllo della sfumatura. Ogni sezione spiega come si legge, comprese le trappole. |
+| `notebooks/01_training.ipynb` | Trains a fold and shows why validation uses a rolling window. |
+| `notebooks/02_inference.ipynb` | Produces a forecast and reads it on the maps. |
+| `notebooks/03_collaudo.ipynb` | **Tests a trained model**: consistency of the artifacts, gain per lead time, check of the 2 degree target at 24 hours, tuning of the uncertainty, reliability of the probabilities, error map, and the blurring check. Every section explains how it is read, including the pitfalls. |
 
-## Sviluppo
+## Development
 
 ```bash
 uv run pytest tests -q
@@ -249,62 +249,62 @@ uv run ruff check src tests scripts
 uv run python scripts/build_notebooks.py
 ```
 
-## Documentazione
+## Documentation
 
-Le relazioni sono in `docs/`, e tutte tranne la prima sono **rigenerate da uno
-script**: non vanno modificate a mano, perche' la prossima esecuzione sovrascrive.
+The reports are in `docs/`, and all except the first are **regenerated by a
+script**: they must not be edited by hand, because the next run overwrites them.
 
-| File | Cosa contiene | Chi lo produce |
+| File | What it contains | Who produces it |
 |---|---|---|
-| [`docs/PIANO.md`](docs/PIANO.md) | Piano di lavoro, con lo stato veritiero di ogni voce | a mano |
-| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Stato dei lavori, decisioni e problemi aperti | a mano |
-| [`docs/RESEARCH.md`](docs/RESEARCH.md) | Stato dell'arte letto e cosa se ne e' preso | a mano |
-| [`docs/INGESTION.md`](docs/INGESTION.md) | Come i GRIB diventano Zarr, e le anomalie trovate | a mano |
-| [`docs/DATA_ANALYSIS.md`](docs/DATA_ANALYSIS.md) | Analisi del dataset ingerito | `scripts/analyze_data.py` |
-| [`docs/VARIANTS.md`](docs/VARIANTS.md) | Confronto fra varianti di rete | `scripts/compare_variants.py` |
-| [`docs/INPUT_DAYS.md`](docs/INPUT_DAYS.md) | Quanti giorni di storico in ingresso | `scripts/screen_input_days.py` |
-| [`docs/OCCURRENCE_ANCHOR.md`](docs/OCCURRENCE_ANCHOR.md) | Ancoraggio della probabilita' di pioggia | `scripts/screen_occurrence_anchor.py` |
-| [`docs/FEATURES.md`](docs/FEATURES.md) | Quali famiglie di canali aiutano a prevedere il cambiamento | `scripts/screen_features.py` |
-| [`docs/NEARTIME.md`](docs/NEARTIME.md) | Latenza reale di ERA5 e sorgenti per il quasi tempo reale | a mano |
+| [`docs/PLAN.md`](docs/PLAN.md) | Work plan, with the truthful status of every item | by hand |
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Work status, decisions and open problems | by hand |
+| [`docs/RESEARCH.md`](docs/RESEARCH.md) | State of the art read and what was taken from it | by hand |
+| [`docs/INGESTION.md`](docs/INGESTION.md) | How the GRIB files become Zarr, and the anomalies found | by hand |
+| [`docs/DATA_ANALYSIS.md`](docs/DATA_ANALYSIS.md) | Analysis of the ingested dataset | `scripts/analyze_data.py` |
+| [`docs/VARIANTS.md`](docs/VARIANTS.md) | Comparison between network variants | `scripts/compare_variants.py` |
+| [`docs/INPUT_DAYS.md`](docs/INPUT_DAYS.md) | How many days of input history | `scripts/screen_input_days.py` |
+| [`docs/OCCURRENCE_ANCHOR.md`](docs/OCCURRENCE_ANCHOR.md) | Anchoring of the rain probability | `scripts/screen_occurrence_anchor.py` |
+| [`docs/FEATURES.md`](docs/FEATURES.md) | Which channel families help to predict change | `scripts/screen_features.py` |
+| [`docs/NEARTIME.md`](docs/NEARTIME.md) | Real ERA5 latency and sources for near real time | by hand |
 
-## Quanto vale il modello, oggi
+## What the model is worth, today
 
-L'errore assoluto non dice se un modello serve. Il confronto che lo dice e' contro la
-persistenza diurna, cioe' l'ipotesi "domani come ieri alla stessa ora", che non costa
-nulla. Sullo split di test, temperatura a 2 metri:
+The absolute error does not tell whether a model is useful. The comparison that tells it is against
+diurnal persistence, that is the hypothesis "tomorrow like yesterday at the same hour", which costs
+nothing. On the test split, 2 metre temperature:
 
-| ore avanti | modello | ieri stessa ora | guadagno |
+| hours ahead | model | yesterday same hour | gain |
 |---|---|---|---|
 | +12 | 1,87 C | 2,43 C | +23 % |
 | +24 | 2,27 C | 2,40 C | **+5,5 %** |
 | +48 | 2,99 C | 3,24 C | +7,6 % |
 | +72 | 3,32 C | 3,68 C | +9,8 % |
 
-A ventiquattro ore il modello guadagna il cinque per cento sul non fare nulla. Cio' che
-ha imparato e' il ciclo giornaliero, che gli era gia' dato dall'ancoraggio, piu' un
-lisciamento locale; la dinamica non c'e'. Le cause misurate sono in
-[docs/PROGRESS.md](docs/PROGRESS.md) sezione 14: campo recettivo efficace di 130 km,
-nessuna variabile in quota, 2,7 visite per finestra in tutto l'addestramento.
+At twenty-four hours the model gains five per cent over doing nothing. What
+it has learned is the daily cycle, which was already given to it by the anchoring, plus a
+local smoothing; the dynamics are not there. The measured causes are in
+[docs/PROGRESS.md](docs/PROGRESS.md) section 14: effective receptive field of 130 km,
+no upper-level variable, 2,7 visits per window in the whole training.
 
-## Limiti noti
+## Known limits
 
-- **ERA5 ha 5-6 giorni di latenza.** Una previsione avviata dagli ultimi dati
-  disponibili riguarda quindi giorni gia' trascorsi: e' un hindcast verificabile,
-  utile per validare, non una previsione operativa. Per il tempo reale servirebbe una
-  sorgente diversa, come <https://data.ecmwf.int>.
-- **Il modello e' poco addestrato, e si sa di quanto.** Con le impostazioni usate finora
-  l'addestramento vedeva 2560 passi, cioe' 0,94 passate sui dati e 2,7 visite per
-  finestra. Un modello che ha guardato ogni esempio meno di tre volte non ha ancora un
-  limite proprio: ha un limite di tempo di calcolo.
-- **L'addestramento e' sulla finestra intera, non su ritagli.** Il ritaglio 96x96 rendeva
-  il training molto piu' economico, ma insegnava alla rete a decidere dentro un orizzonte
-  che in previsione non esiste. Costo misurato del cambio: 3000 ms per passo sul dominio
-  intero contro 800 ms per quattro ritagli, cioe' 28,7 contro 21,7 secondi per milione di
-  punti previsti.
-- **L'incertezza dichiarata e' misurabile solo dalle valutazioni recenti.** Le tabelle
-  prodotte prima dell'introduzione delle metriche `spread_skill_ratio` e `coverage_90` non
-  le contengono; basta rieseguire `scripts/evaluate_model.py`.
+- **ERA5 has 5-6 days of latency.** A forecast started from the last available
+  data therefore concerns days that have already passed: it is a verifiable hindcast,
+  useful for validating, not an operational forecast. For real time a
+  different source would be needed, such as <https://data.ecmwf.int>.
+- **The model is undertrained, and by how much is known.** With the settings used so far
+  training saw 2560 steps, that is 0,94 passes over the data and 2,7 visits per
+  window. A model that has looked at every example fewer than three times does not yet have a
+  limit of its own: it has a compute time limit.
+- **Training is on the whole window, not on crops.** The 96x96 crop made
+  training much cheaper, but it taught the network to decide within a horizon
+  that does not exist in forecasting. Measured cost of the change: 3000 ms per step on the whole
+  domain against 800 ms for four crops, that is 28,7 against 21,7 seconds per million
+  forecast points.
+- **The declared uncertainty is measurable only from the recent evaluations.** The tables
+  produced before the introduction of the `spread_skill_ratio` and `coverage_90` metrics do not
+  contain them; it is enough to rerun `scripts/evaluate_model.py`.
 
-## Licenza
+## Licence
 
-Vedi [LICENSE](LICENSE). I dati ERA5 sono soggetti alla licenza Copernicus.
+See [LICENSE](LICENSE). ERA5 data is subject to the Copernicus licence.

@@ -1,52 +1,52 @@
-# Deep Weather Forecasting - documento di subentro
+# Deep Weather Forecasting - handover document
 
-Questo documento e' scritto perche' una persona che non ha mai visto il progetto possa
-riprenderlo in mano. Non racconta solo **cosa** c'e', ma **perche'** e' cosi', quali
-alternative sono state scartate e con quale misura, e dove sono i limiti veri.
+This document exists so that a person who has never seen the project can pick it up
+again. It does not only describe **what** is here, but **why** it is like this, which
+alternatives were discarded and on which measurement, and where the real limits are.
 
-Regola di lettura adottata in tutto il progetto: **i dati sono veri**. ERA5 e' una
-rianalisi prodotta assimilando osservazioni in un modello fisico. Davanti a un numero
-sorprendente, la prima ipotesi da verificare e' un errore di chi analizza. Questo
-documento riporta i casi in cui quell'ipotesi si e' rivelata giusta, perche' sono la
-parte piu' istruttiva del lavoro.
+Reading rule adopted throughout the project: **the data are true**. ERA5 is a reanalysis
+produced by assimilating observations into a physical model. When faced with a
+surprising number, the first hypothesis to check is a mistake by the person doing the
+analysis. This document reports the cases where that hypothesis turned out to be right,
+because they are the most instructive part of the work.
 
 ---
 
-## 1. Che cosa fa
+## 1. What it does
 
-Previsione a **tre giorni** su griglia, addestrata e ottenuta **in locale su CPU**.
+**Three-day** forecast on a grid, trained and obtained **locally on CPU**.
 
-- **Ingresso**: 7 giorni di storico ERA5, cioe' 21 istanti (06, 12, 18 UTC).
-- **Uscita**: 9 istanti futuri (3 giorni x 3 ore del giorno), prodotti **tutti in una
-  sola passata**, non in modo autoregressivo.
-- **Dominio**: euro-atlantico, 261 x 401 celle a 0,25 gradi (75 N .. 10 N, 40 W .. 60 E).
-- **Grandezze previste**: temperatura a 2 m in **gradi Celsius**, precipitazione
-  (probabilita' e quantita'), neve (frazione della precipitazione) e **incertezza
-  calibrata** su ciascuna.
-- **Consegna**: tabelle Parquet, due notebook e un **report PDF** con mappe.
+- **Input**: 7 days of ERA5 history, that is 21 slots (06, 12, 18 UTC).
+- **Output**: 9 future slots (3 days x 3 hours of the day), all produced **in a single
+  pass**, not autoregressively.
+- **Domain**: Euro-Atlantic, 261 x 401 cells at 0.25 degrees (75 N .. 10 N, 40 W .. 60 E).
+- **Predicted quantities**: 2 m temperature in **degrees Celsius**, precipitation
+  (probability and amount), snow (fraction of precipitation) and **calibrated
+  uncertainty** on each of them.
+- **Delivery**: Parquet tables, two notebooks and a **PDF report** with maps.
 
-Il progetto ha un luogo di interesse dichiarato, **Vigo di Cadore**, che compare nella
-pesatura della perdita, nell'analisi dei dati e nel report.
+The project has a declared place of interest, **Vigo di Cadore**, which appears in the
+loss weighting, in the data analysis and in the report.
 
-### Stato
+### Status
 
 | | |
 |---|---|
-| Test | **678**, tutti verdi, anche dentro il container |
-| Lint | `ruff` pulito su `src`, `tests`, `scripts` |
-| Commit sul ramo | 46, nessuno spinto |
-| Dati scaricati | 21 mesi (2024-01, 2025-01 .. 2026-08); il 2024 residuo e' in scaricamento |
-| Dati ingeriti | 16 mesi, 1458 istanti, zero valori mancanti |
-| Docker | immagine costruita e **verificata eseguendo la suite al suo interno** |
+| Tests | **678**, all green, including inside the container |
+| Lint | `ruff` clean on `src`, `tests`, `scripts` |
+| Commits on the branch | 46, none pushed |
+| Data downloaded | 21 months (2024-01, 2025-01 .. 2026-08); the remaining part of 2024 is downloading |
+| Data ingested | 16 months, 1458 slots, zero missing values |
+| Docker | image built and **verified by running the suite inside it** |
 
 ---
 
-## 2. Come si esegue
+## 2. How to run it
 
-### In locale
+### Locally
 
 ```bash
-uv sync --extra notebooks          # ambiente riproducibile dal lockfile
+uv sync --extra notebooks          # reproducible environment from the lockfile
 uv run python scripts/check_cds_access.py
 uv run python scripts/download_era5.py --dry-run
 uv run python scripts/download_era5.py
@@ -59,613 +59,613 @@ uv run python scripts/predict_forecast.py --fold 0
 uv run python scripts/report_forecast.py --fold 0   # -> PDF
 ```
 
-Le credenziali CDS stanno in `.env`, che non e' tracciato. Non vanno mai incollate in
-chat ne' committate: una chiave transitata in un canale non cifrato va considerata
-compromessa e ruotata.
+The CDS credentials live in `.env`, which is not tracked. They must never be pasted into
+a chat or committed: a key that has travelled through an unencrypted channel must be
+considered compromised and rotated.
 
-### In container
+### In a container
 
 ```bash
 docker compose build
 docker compose run --rm dwf python scripts/ingest_era5.py --list
-docker compose up jupyter        # notebook su http://localhost:8888
+docker compose up jupyter        # notebook at http://localhost:8888
 ```
 
-Dati, configurazioni, modelli e notebook sono **volumi**, non contenuti
-dell'immagine: pesano decine di gigabyte e devono sopravvivere a una ricostruzione.
+Data, configurations, models and notebooks are **volumes**, not image content: they
+weigh tens of gigabytes and must survive a rebuild.
 
-**Avvertenza verificata**: Debian bookworm fornisce ecCodes 2.28 mentre `cfgrib`
-raccomanda 2.42. La suite passa comunque nel container, ma l'ingestione dei GRIB
-conviene eseguirla sull'host.
+**Verified warning**: Debian bookworm ships ecCodes 2.28 while `cfgrib` recommends 2.42.
+The suite passes in the container anyway, but GRIB ingestion is better run on the host.
 
 ---
 
-## 3. Mappa del repository
+## 3. Repository map
 
 ```
 src/dwf/
-  config.py          Configurazione validata con pydantic; unico punto di verita'
-  variables.py       Anagrafica delle 24 variabili: unita', trasformazioni, offset
-  slots.py           Aritmetica degli istanti; qui vive diurnal_reference_index
-  tables.py          Schemi Parquet dichiarati e verificati
-  credentials.py     Lettura delle credenziali CDS, mai stampate
-  solar.py           Geometria solare (Spencer 1971): 3 canali
-  thermo.py          Termodinamica dell'aria umida: 4 canali
-  weighting.py       Pesi spaziali della perdita (area + fuoco locale)
-  persistence.py     Salvataggio dei modelli senza pickle
-  calibration.py     Calibrazione isotonica delle probabilita'
+  config.py          Configuration validated with pydantic; single source of truth
+  variables.py       Registry of the 24 variables: units, transforms, offsets
+  slots.py           Slot arithmetic; diurnal_reference_index lives here
+  tables.py          Parquet schemas declared and verified
+  credentials.py     Reading of the CDS credentials, never printed
+  solar.py           Solar geometry (Spencer 1971): 3 channels
+  thermo.py          Moist air thermodynamics: 4 channels
+  weighting.py       Spatial loss weights (area + local focus)
+  persistence.py     Model saving without pickle
+  calibration.py     Isotonic calibration of the probabilities
   train.py evaluate.py predict.py report.py
   data/
     download.py ingest.py features.py dataset.py freshness.py refresh.py
   models/
     heads.py blocks.py network.py losses.py
     variants/        conv, attention, fourier, recurrent, hybrid
-scripts/             12 punti d'ingresso da riga di comando
-tests/               20 file, 673 test
+scripts/             12 command line entry points
+tests/               20 files, 673 tests
 ```
 
-Documenti: `INGESTION.md` (fatti verificati sui GRIB), `RESEARCH.md` (ricerca
-tecnologica e scarti motivati), `DATA_ANALYSIS.md` (analisi esplorativa),
-`VARIANTS.md` (confronto fra architetture).
+Documents: `INGESTION.md` (verified facts about the GRIB files), `RESEARCH.md`
+(technology research and motivated rejections), `DATA_ANALYSIS.md` (exploratory
+analysis), `VARIANTS.md` (comparison between architectures).
 
 ---
 
-## 4. I dati
+## 4. The data
 
-### 4.1 Dominio e periodo
+### 4.1 Domain and period
 
-Il dominio non e' stato scelto a mano: e' stato ricavato dagli output gia' presenti
-nel notebook esplorativo del repository originale. Il periodo termina alla data
-dichiarata dai metadati della collection CDS, letta a runtime e non scritta a memoria:
-ERA5 ha circa sei giorni di latenza, quindi **non arriva a oggi**. Ne consegue un
-fatto importante per l'onesta' del progetto: cio' che chiamiamo "previsione" e' in
-realta' un *hindcast verificabile*, e questo e' un pregio, perche' ogni previsione ha
-una verita' con cui confrontarsi.
+The domain was not chosen by hand: it was derived from the outputs already present in
+the exploratory notebook of the original repository. The period ends at the date
+declared by the metadata of the CDS collection, read at runtime and not written from
+memory: ERA5 has about six days of latency, so it **does not reach today**. From this
+follows a fact that matters for the honesty of the project: what we call a "forecast" is
+in fact a *verifiable hindcast*, and this is an advantage, because every forecast has a
+truth to be compared against.
 
-### 4.2 Struttura di archiviazione
+### 4.2 Storage structure
 
-Zarr per il tensore, Parquet per i cataloghi. La divisione non e' estetica: un tensore
-denso di 2862 x 261 x 401 valori per variabile ha bisogno di accesso a blocchi e
-compressione, cose che un formato colonnare orientato alle righe non offre. Polars
-resta per cio' in cui e' imbattibile, cioe' i registri, le metriche e le giunzioni.
+Zarr for the tensor, Parquet for the catalogues. The split is not cosmetic: a dense
+tensor of 2862 x 261 x 401 values per variable needs chunked access and compression,
+things a row-oriented columnar format does not offer. Polars stays for what it is
+unbeatable at, that is registries, metrics and joins.
 
-Blocchi `(8, 261, 401)`. Un tentativo di riblocchettare anche nello spazio e' stato
-**misurato e scartato**: peggiorava le letture per finestra, che sono il caso d'uso
-dominante.
+Chunks `(8, 261, 401)`. An attempt to rechunk in space as well was **measured and
+discarded**: it made per-window reads worse, and those are the dominant use case.
 
-### 4.3 Anomalie spiegate, non corrette
+### 4.3 Anomalies explained, not corrected
 
-**Neve maggiore della precipitazione totale nel 12,26 % delle celle.** Sembra una
-violazione fisica. Non lo e': i messaggi GRIB impacchettano `tp` e `sf` come interi
-con passi di quantizzazione **indipendenti**. La violazione non supera mai 1,5 volte il
-passo di quantizzazione e la sua correlazione con l'intensita' della precipitazione e'
-0,013, cioe' nulla. E' rumore di rappresentazione, non un errore del dato. Per questo
-il bersaglio della frazione nevosa viene limitato a [0, 1] **nel bersaglio** e non nei
-dati archiviati: si vincola cio' che si chiede al modello, non si falsifica l'archivio.
+**Snow greater than total precipitation in 12.26% of the cells.** It looks like a
+physical violation. It is not: the GRIB messages pack `tp` and `sf` as integers with
+**independent** quantization steps. The violation never exceeds 1.5 times the
+quantization step and its correlation with precipitation intensity is 0.013, that is
+none. It is representation noise, not an error in the data. This is why the snow
+fraction target is clipped to [0, 1] **in the target** and not in the stored data: you
+constrain what you ask of the model, you do not falsify the archive.
 
-**Gli istanti non sono equidistanti.** 06Z, 12Z e 18Z distano 6, 6 e 12 ore. Tre
-istanti fanno esattamente un giorno. Sembra un dettaglio ed e' invece la scoperta piu'
-importante dell'analisi: vedi la sezione 6.
-
----
-
-## 5. Le grandezze in ingresso
-
-245 canali: 189 di stato, 27 di tendenza, 21 di velocita' del vento, 2 statici, 2 di
-latitudine, 4 di codifica temporale.
-
-**Le temperature sono in gradi Celsius.** La conversione e' dichiarata sulla variabile
-e applicata **una volta sola**, subito dopo la lettura. Questo non e' cosmetico:
-convertendo piu' a valle, `normalize` e `denormalize` smetterebbero di essere l'una
-l'inversa dell'altra. Il checkpoint gia' addestrato e' rimasto valido **bit per bit**,
-perche' traslare dato e media della stessa quantita' non cambia il valore normalizzato,
-e un test lo verifica.
-
-### 5.1 Fisica derivata, senza scaricare nulla di nuovo
-
-**`solar.py`** implementa le formule di Spencer (1971): declinazione, fattore di
-distanza Terra-Sole, equazione del tempo, coseno dell'angolo zenitale, insolazione al
-limite dell'atmosfera, durata del giorno con gestione esplicita del caso polare. Trenta
-test la confrontano con riferimenti astronomici noti: obliquita' 23,44 gradi, perielio
-al terzo giorno dell'anno, afelio al 185esimo.
-
-**`thermo.py`** ricava dalla temperatura e dal punto di rugiada gia' scaricati:
-tensione di vapore saturo, umidita' relativa, depressione del punto di rugiada,
-pressione al suolo dalla pressione al livello del mare, umidita' specifica, rapporto di
-mescolanza, **contenuto di calore latente** e temperatura potenziale equivalente di
-Bolton. Trentacinque test contro valori tabulati.
-
-Durante quella verifica un test falliva. **Il codice era giusto, l'asserzione era
-sbagliata**: l'invariante che avevo scritto, theta_e >= T, vale solo sotto i 1000 hPa,
-perche' sopra quella pressione la compressione porta la temperatura potenziale sotto
-quella reale. L'invariante corretto e' theta_e >= theta. E' stato corretto il test, non
-il codice.
+**The slots are not equally spaced.** 06Z, 12Z and 18Z are 6, 6 and 12 hours apart.
+Three slots make exactly one day. It looks like a detail and is instead the most
+important finding of the analysis: see section 6.
 
 ---
 
-## 6. La scoperta che ha cambiato il progetto
+## 5. The input quantities
 
-L'analisi di prevedibilita' mostrava una correlazione che **non** decadeva in modo
-monotono con la scadenza: risaliva a 3, 6 e 9 istanti. Applicando la regola "i dati
-sono veri", la spiegazione e' risultata essere un mio errore di etichetta: avevo
-scritto la colonna delle ore come `scadenza x 6`, ma gli istanti non sono equidistanti,
-e 3 istanti sono **un giorno esatto**. I picchi erano semplicemente **la stessa ora del
-giorno**.
+245 channels: 189 of state, 27 of tendency, 21 of wind speed, 2 static, 2 of latitude,
+4 of time encoding.
 
-Questo ha smascherato un riferimento molto piu' forte di quello che stavamo usando.
+**Temperatures are in degrees Celsius.** The conversion is declared on the variable and
+applied **only once**, right after reading. This is not cosmetic: converting further
+downstream, `normalize` and `denormalize` would stop being each other's inverse. The
+already trained checkpoint stayed valid **bit for bit**, because translating the data
+and the mean by the same amount does not change the normalized value, and a test
+verifies it.
 
-| scadenza | ore | persistenza ingenua | **persistenza diurna** | guadagno |
+### 5.1 Derived physics, without downloading anything new
+
+**`solar.py`** implements the formulas of Spencer (1971): declination, Earth-Sun
+distance factor, equation of time, cosine of the zenith angle, insolation at the top of
+the atmosphere, day length with explicit handling of the polar case. Thirty tests
+compare it against known astronomical references: obliquity 23.44 degrees, perihelion on
+the third day of the year, aphelion on the 185th.
+
+**`thermo.py`** derives from the already downloaded temperature and dew point:
+saturation vapour pressure, relative humidity, dew point depression, surface pressure
+from mean sea level pressure, specific humidity, mixing ratio, **latent heat content**
+and Bolton equivalent potential temperature. Thirty-five tests against tabulated values.
+
+During that check one test was failing. **The code was right, the assertion was
+wrong**: the invariant I had written, theta_e >= T, holds only below 1000 hPa, because
+above that pressure compression brings the potential temperature below the actual one.
+The correct invariant is theta_e >= theta. The test was fixed, not the code.
+
+---
+
+## 6. The finding that changed the project
+
+The predictability analysis showed a correlation that did **not** decay monotonically
+with lead time: it rose again at 3, 6 and 9 slots. Applying the rule "the data are
+true", the explanation turned out to be a labelling mistake of mine: I had written the
+hours column as `lead x 6`, but the slots are not equally spaced, and 3 slots are
+**exactly one day**. The peaks were simply **the same hour of the day**.
+
+This exposed a much stronger baseline than the one we were using.
+
+| lead | hours | naive persistence | **diurnal persistence** | gain |
 |---:|---:|---:|---:|---:|
-| 1 | 8 | 4,535 | **2,401** | 47,1 % |
-| 3 | 24 | 2,401 | 2,401 | 0 % |
-| 5 | 40 | 5,201 | **3,173** | 39,0 % |
-| 9 | 72 | 3,557 | 3,557 | 0 % |
+| 1 | 8 | 4.535 | **2.401** | 47.1% |
+| 3 | 24 | 2.401 | 2.401 | 0% |
+| 5 | 40 | 5.201 | **3.173** | 39.0% |
+| 9 | 72 | 3.557 | 3.557 | 0% |
 
-Ripetere *ieri alla stessa ora* costa zero e raggiunge un errore quadratico di circa
-3,0 gradi. Il modello addestrato ne faceva **4,45**. Il vantaggio dichiarato in
-precedenza era quindi un artefatto di un riferimento troppo debole: contro il
-riferimento giusto, **il modello perdeva**.
+Repeating *yesterday at the same hour* costs nothing and reaches a root mean square
+error of about 3.0 degrees. The trained model was making **4.45**. The advantage claimed
+previously was therefore an artefact of a baseline that was too weak: against the right
+baseline, **the model lost**.
 
-### 6.1 La conseguenza operativa
+### 6.1 The operational consequence
 
-Se un riferimento gratuito e' cosi' forte, chiedere alla rete di ricostruirlo da zero
-e' uno spreco di capacita'. La testa gaussiana ora produce uno **scarto** che viene
-sommato all'osservazione piu' recente alla stessa ora del bersaglio. Solo la media
-viene traslata: la log-varianza descrive l'incertezza dello scarto e non va spostata.
+If a free baseline is that strong, asking the network to rebuild it from scratch is a
+waste of capacity. The Gaussian head now produces a **residual** that is added to the
+most recent observation at the same hour as the target. Only the mean is shifted: the
+log-variance describes the uncertainty of the residual and must not be shifted.
 
-L'effetto e' misurato, non supposto: a parita' assoluta di protocollo, tre passate
-ridotte portano da **6,613** a **3,652** gradi di errore quadratico.
+The effect is measured, not assumed: with the protocol held absolutely constant, three
+reduced passes bring the root mean square error from **6.613** to **3.652** degrees.
 
-Il riferimento diurno e' anche entrato nella valutazione come modello a se
-(`persistence_diurnal`), accanto a quella ingenua e alla climatologia.
+The diurnal baseline also entered the evaluation as a model of its own
+(`persistence_diurnal`), alongside the naive one and climatology.
 
 ---
 
-## 7. Il modello
+## 7. The model
 
-### 7.1 Contratto
+### 7.1 Contract
 
-La rete e' un encoder-decoder a U completamente convoluzionale: si addestra su ritagli
-e si applica alla griglia intera. Produce **un solo tensore** `(B, C, H, W)`; la
-mappatura dei canali su (variabile, componente, scadenza) e' dichiarata in
-`OutputLayout`. Indicizzare quei canali a mano sarebbe l'errore piu' silenzioso
-possibile: scambiare media e log-varianza non fa fallire nulla, produce solo previsioni
-sbagliate.
+The network is a fully convolutional U-shaped encoder-decoder: it is trained on crops
+and applied to the whole grid. It produces **a single tensor** `(B, C, H, W)`; the
+mapping of the channels onto (variable, component, lead) is declared in `OutputLayout`.
+Indexing those channels by hand would be the quietest possible mistake: swapping mean
+and log-variance makes nothing fail, it only produces wrong forecasts.
 
-I pesi finali sono azzerati all'inizializzazione: la rete parte da una previsione
-costante, non da rumore.
+The final weights are zeroed at initialization: the network starts from a constant
+forecast, not from noise.
 
-### 7.2 Le varianti confrontabili
+### 7.2 The comparable variants
 
-Il confronto fra architetture ha valore solo se **cambia una cosa sola**. Qui la cosa
-sola e' il **blocco elementare**: scheletro, canali di ingresso, layout di uscita, dati,
-perdita e protocollo restano identici.
+A comparison between architectures has value only if **one thing changes**. Here the one
+thing is the **elementary block**: skeleton, input channels, output layout, data, loss
+and protocol stay identical.
 
-| variante | parametri | ms/passata | idea |
+| variant | parameters | ms/pass | idea |
 |---|---:|---:|---|
-| `conv` | 9,98 M | 225 | convoluzione residua, riferimento |
-| `attention` | 13,37 M | 415 | attenzione a finestre 8x8 con bias di posizione relativa |
-| `fourier` | 8,99 M | 201 | convoluzione spettrale sui modi bassi, ricettivo globale |
-| `recurrent` | 28,93 M | 1114 | ricorrenza convoluzionale a pesi condivisi |
-| `hybrid` | 16,42 M | 371 | somma di ramo locale e ramo spettrale |
+| `conv` | 9.98 M | 225 | residual convolution, baseline |
+| `attention` | 13.37 M | 415 | attention over 8x8 windows with relative position bias |
+| `fourier` | 8.99 M | 201 | spectral convolution over the low modes, globally receptive |
+| `recurrent` | 28.93 M | 1114 | convolutional recurrence with shared weights |
+| `hybrid` | 16.42 M | 371 | sum of a local branch and a spectral branch |
 
-**Esito del confronto** (dettaglio in `VARIANTS.md`). A parita' assoluta di protocollo
-le cinque architetture segnano fra 3,642 e 3,666 gradi. Ma ripetere **la stessa**
-variante cambiando solo il seme produce 3,652 / 3,557 / 3,665, cioe' uno scarto tipo di
-**0,059 gradi**: l'intera differenza fra le architetture, 0,024 gradi, sta dentro meno
-di mezzo scarto tipo. **Il banco non riesce a distinguerle.** Proclamare vincitrice la
-prima in classifica significherebbe leggere il seme, non il modello. E' esattamente la
-saturazione dei backbone documentata in arXiv:2407.14129.
+**Outcome of the comparison** (details in `VARIANTS.md`). With the protocol held
+absolutely constant the five architectures score between 3.642 and 3.666 degrees. But
+repeating **the same** variant changing only the seed produces 3.652 / 3.557 / 3.665,
+that is a standard deviation of **0.059 degrees**: the whole difference between the
+architectures, 0.024 degrees, sits inside less than half a standard deviation. **The
+bench cannot distinguish them.** Declaring the first in the ranking the winner would
+mean reading the seed, not the model. This is exactly the backbone saturation documented
+in arXiv:2407.14129.
 
-Il default va quindi a `conv`, non perche' abbia vinto ma perche' a parita' statistica
-di accuratezza costa 99 s per passata contro 151, 159, 185 e 428 delle altre. Su CPU il
-tempo e' il vincolo reale.
+The default therefore goes to `conv`, not because it won but because, at statistically
+equal accuracy, it costs 99 s per pass against 151, 159, 185 and 428 of the others. On
+CPU time is the real constraint.
 
-**Le varianti che perdono non vengono cancellate.** Restano in
-`src/dwf/models/variants/`, documentate e selezionabili con `model.variant`, perche' il
-risultato potrebbe ribaltarsi con piu' dati e perche' la misura che le ha scartate deve
-restare riproducibile.
+**The variants that lose are not deleted.** They stay in
+`src/dwf/models/variants/`, documented and selectable with `model.variant`, because the
+result could flip with more data and because the measurement that discarded them must
+stay reproducible.
 
-L'unico effetto che **esce** dal rumore e' l'ancoraggio diurno: 6,613 contro una media
-di 3,625, circa cinquanta scarti tipo. Il modo di porre il problema ha pesato piu' di
-ogni scelta di architettura.
+The only effect that **comes out** of the noise is the diurnal anchoring: 6.613 against
+an average of 3.625, about fifty standard deviations. The way the problem was posed
+mattered more than any architectural choice.
 
-Due precisazioni oneste:
+Two honest clarifications:
 
-- La variante di Fourier era arrivata a **228 milioni di parametri**. La causa era mia:
-  allocavo 16 modi per asse mentre al collo di bottiglia la griglia si riduce a 12
-  celle, quindi la gran parte dei pesi veniva troncata a ogni passata e non veniva mai
-  addestrata. Con 8 modi e un ramo spettrale piu' stretto costa **meno** della
-  convoluzione.
-- La variante ricorrente **non e' il ConvLSTM temporale** della letteratura. Quello
-  consuma una sequenza `(B, T, C, H, W)`, il che cambierebbe il layout di ingresso,
-  cioe' proprio la variabile che il confronto tiene ferma. Qui si misura l'altra
-  proprieta' interessante: la profondita' effettiva a parametri costanti.
+- The Fourier variant had reached **228 million parameters**. The cause was mine: I was
+  allocating 16 modes per axis while at the bottleneck the grid shrinks to 12 cells, so
+  most of the weights were truncated on every pass and were never trained. With 8 modes
+  and a narrower spectral branch it costs **less** than the convolution.
+- The recurrent variant is **not the temporal ConvLSTM** of the literature. That one
+  consumes a sequence `(B, T, C, H, W)`, which would change the input layout, that is
+  exactly the variable the comparison holds fixed. Here the other interesting property
+  is measured: effective depth at constant parameter count.
 
-Tecnologie escluse e perche', in dettaglio in `RESEARCH.md`: rappresentazioni sferiche
-(il dominio non e' una sfera), grafi (su griglia regolare sono una convoluzione piu'
-lenta), diffusione (produce ensemble, mentre qui l'incertezza e' gia' calibrata),
-modelli fondazionali (richiedono livelli di pressione non scaricati).
+Technologies excluded and why, in detail in `RESEARCH.md`: spherical representations (the
+domain is not a sphere), graphs (on a regular grid they are a slower convolution),
+diffusion (it produces ensembles, while here the uncertainty is already calibrated),
+foundation models (they require pressure levels that were not downloaded).
 
-### 7.3 La perdita
+### 7.3 The loss
 
-Somma pesata delle teste, piu' due termini aggiunti su richiesta e ciascuno con la
-propria giustificazione misurata.
+Weighted sum of the heads, plus two terms added on request, each with its own measured
+justification.
 
-**Peso di area.** La griglia e' regolare in gradi, non in chilometri: a 70 gradi una
-cella copre il 34 % di una cella equatoriale. Senza correzione la rete spenderebbe
-capacita' sull'Artico.
+**Area weight.** The grid is regular in degrees, not in kilometres: at 70 degrees a cell
+covers 34% of an equatorial cell. Without correction the network would spend capacity on
+the Arctic.
 
-**Fuoco su Vigo di Cadore.** Una campana attorno al punto, isotropa in chilometri e non
-in gradi. Il guadagno e' volutamente contenuto: alzarlo trasformerebbe un modello di
-dominio in un modello locale addestrato su una manciata di celle, che generalizzerebbe
-peggio ovunque, Vigo compreso.
+**Focus on Vigo di Cadore.** A bell around the point, isotropic in kilometres and not in
+degrees. The gain is deliberately small: raising it would turn a domain model into a
+local model trained on a handful of cells, which would generalize worse everywhere, Vigo
+included.
 
-Entrambi i pesi sono **normalizzati a media unitaria**, quindi cambiarli non cambia la
-scala della perdita e i pesi relativi fra le teste restano confrontabili.
+Both weights are **normalized to unit mean**, so changing them does not change the scale
+of the loss and the relative weights between the heads stay comparable.
 
-**Termine spettrale.** Sotto errore quadratico puro, se la correlazione fra previsione
-e realta' vale rho, il minimo si ottiene producendo un campo con ampiezza rho volte
-quella vera: sfumare conviene, perche' una struttura nel posto sbagliato viene punita
-due volte, dove c'e' e dove manca. E' esattamente il difetto misurato sul primo
-modello, che sottostimava di 4,8 gradi l'escursione a mezzogiorno. Confrontare i moduli
-della trasformata di Fourier premia l'ampiezza corretta **senza** reintrodurre la
-penalizzazione di posizione. Un test lo dimostra su dati sintetici: con il solo errore
-quadratico l'ottimo cade a 0,6 per una correlazione di 0,6, e aggiungendo il termine si
-sposta verso l'ampiezza piena. Un secondo test verifica che traslare il campo lasci il
-termine a zero.
+**Spectral term.** Under pure squared error, if the correlation between forecast and
+reality is rho, the minimum is obtained by producing a field whose amplitude is rho
+times the true one: blurring pays off, because a structure in the wrong place is
+punished twice, where it is and where it is missing. This is exactly the defect measured
+on the first model, which underestimated the midday range by 4.8 degrees. Comparing the
+moduli of the Fourier transform rewards the correct amplitude **without** reintroducing
+the position penalty. A test shows it on synthetic data: with squared error alone the
+optimum falls at 0.6 for a correlation of 0.6, and adding the term it moves towards full
+amplitude. A second test verifies that translating the field leaves the term at zero.
 
-Il termine e' applicato **solo alle variabili continue**: la letteratura documenta un
-peggioramento delle metriche di occorrenza della precipitazione.
+The term is applied **only to the continuous variables**: the literature documents a
+degradation of the precipitation occurrence metrics.
 
 ---
 
-## 8. Valutazione
+## 8. Evaluation
 
-### 8.1 Protocollo
+### 8.1 Protocol
 
-Validazione a **finestra mobile**, 6 fold. Uno split unico in tre blocchi contigui
-avrebbe concentrato il test nella coda estiva del periodo: la neve non sarebbe stata
-valutabile e la temperatura sarebbe stata misurata su un solo regime. Con i fold i
-blocchi di test coprono **tutti e dodici i mesi**, mantenendo in ciascun fold l'ordine
-train -> validazione -> test. Alle giunzioni si scartano 30 istanti per attenuare
-l'autocorrelazione.
+**Rolling window** validation, 6 folds. A single split into three contiguous blocks
+would have concentrated the test in the summer tail of the period: snow would not have
+been assessable and temperature would have been measured on a single regime. With the
+folds the test blocks cover **all twelve months**, keeping in each fold the order train
+-> validation -> test. At the junctions 30 slots are discarded to attenuate
+autocorrelation.
 
-La calibrazione e le soglie di decisione si stimano **sulla validazione** e si misurano
-**sul test**. Stimarle e misurarle sullo stesso blocco gonfierebbe il risultato.
+Calibration and decision thresholds are estimated **on the validation set** and measured
+**on the test set**. Estimating and measuring them on the same block would inflate the
+result.
 
-### 8.2 Risultati sul test del fold 0
+### 8.2 Results on the test set of fold 0
 
-| | dwf | persistenza | **persistenza diurna** |
+| | dwf | persistence | **diurnal persistence** |
 |---|---:|---:|---:|
-| t2m RMSE (degC) | 4,45 | 4,73 | **3,16** |
-| tp Brier | **0,182** | 0,261 | 0,274 |
-| tp skill score | **+0,193** | -0,156 | -0,212 |
-| sf Brier | **0,061** | 0,075 | 0,081 |
+| t2m RMSE (degC) | 4.45 | 4.73 | **3.16** |
+| tp Brier | **0.182** | 0.261 | 0.274 |
+| tp skill score | **+0.193** | -0.156 | -0.212 |
+| sf Brier | **0.061** | 0.075 | 0.081 |
 
-Lettura onesta: il modello **vince nettamente sulle probabilita'** di pioggia e neve, e
-sulla temperatura **perde** contro il riferimento diurno. E' la ragione per cui e' stato
-introdotto l'ancoraggio, il cui effetto e' gia' misurato nel banco comparativo.
+Honest reading: the model **wins clearly on the probabilities** of rain and snow, and on
+temperature it **loses** against the diurnal baseline. This is the reason the anchoring
+was introduced, and its effect is already measured in the comparative bench.
 
-### 8.3 Calibrazione
+### 8.3 Calibration
 
-Isotonica, con PAVA scritto a mano. Sul test: errore di calibrazione da 0,0702 a
-**0,0392**, Brier da 0,1841 a **0,1785**. Le soglie scelte sulla validazione sono 0,38
-per la pioggia e 0,23 per la neve. Quest'ultima ha corretto un difetto reale: la soglia
-era rimasta a 0,5 e il punteggio F1 della neve valeva 0,194; scegliendola sui dati e'
-salito a **0,553**.
+Isotonic, with a hand-written PAVA. On the test set: calibration error from 0.0702 to
+**0.0392**, Brier from 0.1841 to **0.1785**. The thresholds chosen on the validation set
+are 0.38 for rain and 0.23 for snow. The latter fixed a real defect: the threshold had
+been left at 0.5 and the F1 score for snow was 0.194; choosing it on the data it rose to
+**0.553**.
 
 ---
 
 ## 9. Vigo di Cadore
 
-Cella riga 114, colonna 210 (46,50 N, 12,50 E), frazione di terra 1,00.
+Cell row 114, column 210 (46.50 N, 12.50 E), land fraction 1.00.
 
 | | |
 |---|---|
-| quota del modello | 1463 m |
-| quota reale del paese | 951 m |
-| scarto | **512 m** |
-| bias termico implicato (6,5 K/km) | circa **3,3 K** piu' freddo |
+| model elevation | 1463 m |
+| actual elevation of the village | 951 m |
+| difference | **512 m** |
+| implied thermal bias (6.5 K/km) | about **3.3 K** colder |
 
-Non e' un errore del modello ne' del dato: a 0,25 gradi una cella copre circa 28 km e
-media tutto il Cadore, creste comprese. Per passare dalla cella al paese serve una
-correzione di quota esplicita. Il fatto e' dichiarato nel report PDF, cosi' chi legge
-non scambia un limite di risoluzione per un errore di previsione.
+It is not an error of the model nor of the data: at 0.25 degrees a cell covers about
+28 km and averages the whole Cadore, ridges included. To go from the cell to the village
+an explicit elevation correction is needed. The fact is declared in the PDF report, so
+that the reader does not mistake a resolution limit for a forecast error.
 
-L'escursione diurna locale misurata e' di **6,7 gradi**, quasi il doppio della media di
-dominio: e' un punto severo per il modello.
-
----
-
-## 10. Sicurezza
-
-I pesi si salvano in `models/` come `.npz` letto con `allow_pickle=False`, con i
-metadati in JSON separato. Il motivo e' concreto: il codice usava
-`torch.load(..., weights_only=False)`, cioe' l'impostazione massimamente insicura, che
-esegue codice arbitrario contenuto nel file.
-
-La sicurezza non e' **dichiarata** ma **dimostrata**: un test costruisce un payload che
-sotto pickle **si esegue davvero**, e un secondo test verifica che il caricatore del
-progetto lo rifiuti **senza eseguirlo**. Senza il primo test, il secondo non
-proverebbe nulla.
-
-Le credenziali non vengono mai stampate ne' registrate. `.env`, `datasets/` e `models/`
-sono fuori dal controllo di versione.
+The measured local diurnal range is **6.7 degrees**, almost twice the domain average: it
+is a harsh point for the model.
 
 ---
 
-## 11. Difetti trovati e corretti
+## 10. Security
 
-Molti sono miei. Sono elencati perche' il metodo conta quanto il risultato.
+The weights are saved in `models/` as `.npz` read with `allow_pickle=False`, with the
+metadata in a separate JSON. The reason is concrete: the code used
+`torch.load(..., weights_only=False)`, that is the maximally insecure setting, which
+executes arbitrary code contained in the file.
 
-| difetto | come e' emerso | esito |
+Security is not **declared** but **demonstrated**: one test builds a payload that under
+pickle **really does execute**, and a second test verifies that the project's loader
+rejects it **without executing it**. Without the first test, the second would prove
+nothing.
+
+Credentials are never printed or logged. `.env`, `datasets/` and `models/` are outside
+version control.
+
+---
+
+## 11. Defects found and fixed
+
+Many are mine. They are listed because the method counts as much as the result.
+
+| defect | how it surfaced | outcome |
 |---|---|---|
-| Ordine degli assi nell'impilamento | `IndexError` a runtime | trasposizione esplicita |
-| `log1p` inefficace sulla pioggia in metri | ispezione della scala | fattore di scala 1000 |
-| 0,42 s per campione | profilazione, non intuito | `valid_time` in cache, 32 volte piu' veloce |
-| Indice sbagliato in PAVA | test di monotonia | riscritto con variabili esplicite |
-| Soglia neve lasciata a 0,5 | F1 assurdamente basso | scelta sulla validazione, F1 0,553 |
-| Invariante theta_e sbagliato **nel test** | test rosso | corretto il test, non il codice |
-| Percorso Zarr sbagliato | "non trovo i dati" | i dati c'erano, sbagliavo io |
-| Manifest scritto solo a fine corsa | ispezione | scritto dopo ogni task |
-| `torch.load(weights_only=False)` | revisione di sicurezza | sostituito e dimostrato sicuro |
-| Etichette orarie `scadenza x 6` | correlazione non monotona | istanti non equidistanti |
-| Riferimento troppo debole | conseguenza della precedente | aggiunta la persistenza diurna |
-| 228 M di parametri nella variante spettrale | misura del costo | modi ridotti, ora piu' leggera di `conv` |
-| Build Docker fallita all'ultimo strato | build reale | `README.md` e `LICENSE` mancanti nell'immagine |
+| Axis order in the stacking | `IndexError` at runtime | explicit transposition |
+| `log1p` ineffective on rain in metres | inspection of the scale | scale factor 1000 |
+| 0.42 s per sample | profiling, not intuition | `valid_time` cached, 32 times faster |
+| Wrong index in PAVA | monotonicity test | rewritten with explicit variables |
+| Snow threshold left at 0.5 | absurdly low F1 | chosen on the validation set, F1 0.553 |
+| Wrong theta_e invariant **in the test** | red test | the test was fixed, not the code |
+| Wrong Zarr path | "I cannot find the data" | the data were there, I was wrong |
+| Manifest written only at the end of the run | inspection | written after every task |
+| `torch.load(weights_only=False)` | security review | replaced and demonstrated safe |
+| Hour labels `lead x 6` | non-monotonic correlation | slots are not equally spaced |
+| Baseline too weak | consequence of the previous one | diurnal persistence added |
+| 228 M parameters in the spectral variant | cost measurement | modes reduced, now lighter than `conv` |
+| Docker build failed at the last layer | real build | `README.md` and `LICENSE` missing in the image |
 
 ---
 
-## 12. Limiti noti
+## 12. Known limits
 
-1. **Il modello attuale e' ancora quello non ancorato.** L'ancoraggio, la pesatura e il
-   termine spettrale sono implementati e testati, e il banco comparativo ne misura
-   l'effetto, ma il modello finale a scala piena va riaddestrato.
-2. **Il protocollo del banco e' ridotto** (ritagli piccoli, poche passate) e misurato su
-   **un solo fold**. La dispersione fra semi e' stata misurata solo per `conv` e si
-   assume simile per le altre: plausibile, non verificato. I tempi per passata sono
-   inoltre contaminati dal carico della macchina, quindi vanno confrontati solo entro
-   la stessa corsa.
-3. **Il calore latente nel report** usa il punto di rugiada dell'ultimo istante
-   osservato, perche' la previsione non lo contiene. E' un'ipotesi debole su 72 ore:
-   quel campo va letto come struttura spaziale, non come previsione di umidita'. Il
-   limite e' stampato sulla pagina.
-4. **Le mappe non hanno proporzioni geografiche fedeli**: cartopy non e' fra le
-   dipendenze e a latitudini diverse la scala nord-sud e est-ovest divergono.
-5. **ecCodes 2.28 nel container** contro il 2.42 raccomandato: ingerire sull'host.
-6. **La chiave CDS va ruotata** se e' mai transitata in un canale non cifrato.
+1. **The current model is still the unanchored one.** The anchoring, the weighting and
+   the spectral term are implemented and tested, and the comparative bench measures
+   their effect, but the final full-scale model has to be retrained.
+2. **The bench protocol is reduced** (small crops, few passes) and measured on **a
+   single fold**. The spread across seeds was measured only for `conv` and is assumed
+   similar for the others: plausible, not verified. The per-pass times are also
+   contaminated by the load on the machine, so they must be compared only within the
+   same run.
+3. **The latent heat in the report** uses the dew point of the last observed slot,
+   because the forecast does not contain it. It is a weak assumption over 72 hours: that
+   field must be read as spatial structure, not as a humidity forecast. The limit is
+   printed on the page.
+4. **The maps do not have faithful geographic proportions**: cartopy is not among the
+   dependencies and at different latitudes the north-south and east-west scales diverge.
+5. **ecCodes 2.28 in the container** against the recommended 2.42: ingest on the host.
+6. **The CDS key must be rotated** if it has ever travelled through an unencrypted
+   channel.
 
-Il punto sull'incompletezza del 2024 e' superato: l'ingestione copre 2862 slot su 2862
-attesi, dal 2024-01-01 al 2026-08-11, senza buchi.
-
----
-
-## 13. Che cosa farei dopo
-
-> Superata: il piano aggiornato e' in **[PIANO.md](PIANO.md)**, con lo stato veritiero di
-> ogni voce. Quanto segue e' la lista come era prima delle misure della sezione 14 e
-> resta solo come traccia storica.
-
-1. Riaddestrare `conv` ancorata a scala piena e rivalutarla onestamente contro la
-   persistenza diurna. Il banco e' chiuso: la scelta e' fatta e motivata.
-2. Misurare la **curva di capacita'** invece di ingrandire la rete a intuito. Il banco
-   ha gia' fornito la prima evidenza in questa direzione: 28,9 milioni di parametri
-   (`recurrent`) non battono 9,9 milioni (`conv`), e costano quattro volte tanto.
-3. Screening delle caratteristiche candidate contro il **cambiamento futuro**, non
-   contro il valore futuro: una variabile che predice bene il valore ma non il
-   cambiamento non aggiunge nulla alla persistenza.
-4. Correzione di quota esplicita per il passaggio da cella a localita'.
-5. Estendere i fold ai due anni completi.
+The point about the incompleteness of 2024 is superseded: the ingestion covers 2862
+slots out of 2862 expected, from 2024-01-01 to 2026-08-11, with no gaps.
 
 ---
 
-## 14. Il modello non e' mal progettato: e' poco addestrato
+## 13. What I would do next
 
-Questa sezione e' posteriore alle precedenti e, dove le contraddice, prevale.
+> Superseded: the updated plan is in **[PLAN.md](PLAN.md)**, with the truthful status of
+> every item. What follows is the list as it was before the measurements of section 14
+> and remains only as a historical trace.
 
-### 14.1 Il conto che nessuno aveva fatto
+1. Retrain `conv` with anchoring at full scale and re-evaluate it honestly against
+   diurnal persistence. The bench is closed: the choice is made and motivated.
+2. Measure the **capacity curve** instead of enlarging the network by intuition. The
+   bench has already provided the first evidence in this direction: 28.9 million
+   parameters (`recurrent`) do not beat 9.9 million (`conv`), and cost four times as
+   much.
+3. Screening of the candidate features against the **future change**, not against the
+   future value: a variable that predicts the value well but not the change adds nothing
+   to persistence.
+4. Explicit elevation correction for the step from cell to locality.
+5. Extend the folds to the two complete years.
 
-`samples_per_epoch: 512` con `batch_size: 4` sono **128 passi di ottimizzazione per
-epoca**. Venti epoche fanno **2560 passi** per una rete da dieci milioni di parametri.
+---
 
-La copertura dei dati e' ancora piu' netta. Un ritaglio 96x96 e' 9216 punti su 104 661
-del dominio, l'8,8%:
+## 14. The model is not badly designed: it is under-trained
 
-| | punti-griglia |
+This section is later than the previous ones and, where it contradicts them, it
+prevails.
+
+### 14.1 The arithmetic nobody had done
+
+`samples_per_epoch: 512` with `batch_size: 4` are **128 optimization steps per epoch**.
+Twenty epochs make **2560 steps** for a network of ten million parameters.
+
+The data coverage is even starker. A 96x96 crop is 9216 points out of the 104,661 of the
+domain, 8.8%:
+
+| | grid points |
 |---|---|
-| disponibili in addestramento (961 finestre) | 100 579 221 |
-| visti in venti epoche (10 240 ritagli) | 94 371 840 |
-| rapporto | **0,94** |
+| available in training (961 windows) | 100,579,221 |
+| seen in twenty epochs (10,240 crops) | 94,371,840 |
+| ratio | **0.94** |
 
-In tutto l'addestramento il modello vede l'equivalente di **meno di una passata** sui
-dati. La parola "epoca" nei log e' fuorviante: rivisita 961 finestre dieci volte
-ciascuna guardando ogni volta un decimo del dominio, non passa venti volte sui dati.
+Over the whole training the model sees the equivalent of **less than one pass** over the
+data. The word "epoch" in the logs is misleading: it revisits 961 windows ten times each
+looking every time at a tenth of the domain, it does not pass twenty times over the
+data.
 
-Conseguenza per l'interpretazione di tutto quanto precede: ogni confronto fra
-architetture, varianti e caratteristiche finora e' stato condotto in regime di
-sotto-addestramento, dove vince chi parte meglio, non chi arriva piu' lontano. E' la
-stessa ragione per cui l'ancoraggio della pioggia sembrava utile a scala ridotta.
+Consequence for the interpretation of everything above: every comparison between
+architectures, variants and features so far was carried out in an under-training regime,
+where the winner is the one that starts better, not the one that gets further. It is the
+same reason why the rain anchoring seemed useful at reduced scale.
 
-### 14.2 Il campo recettivo efficace e' minuscolo
+### 14.2 The effective receptive field is tiny
 
-Derivando un punto di uscita del modello addestrato rispetto a tutto l'ingresso: il
-**50% dell'influenza arriva da meno di 130 km**, il 90% da 2189 km. Un sistema di media
-latitudine viaggia 500-1000 km al giorno, quindi a tre giorni l'informazione utile parte
-da 1500-3000 km. La rete puo' arrivarci in teoria e non ci arriva in pratica.
+Differentiating one output point of the trained model with respect to the whole input:
+**50% of the influence comes from less than 130 km**, 90% from 2189 km. A mid-latitude
+system travels 500-1000 km per day, so at three days the useful information starts from
+1500-3000 km away. The network can reach that in theory and does not reach it in
+practice.
 
-Attenzione al ritaglio: addestrando su 96x96 il modello non vede **mai** nulla oltre 96
-pixel, cioe' 2664 km. Non puo' imparare una relazione che non gli e' mai stata mostrata.
-Parte del campo recettivo stretto puo' essere causata dal ritaglio, non dalla
-convoluzione. Va separato ingrandendo la finestra vista, non riducendo i dati.
+Careful with the crop: training on 96x96 the model **never** sees anything beyond 96
+pixels, that is 2664 km. It cannot learn a relation that was never shown to it. Part of
+the narrow receptive field may be caused by the crop, not by the convolution. It has to
+be separated by enlarging the window seen, not by reducing the data.
 
-### 14.3 Cosa manca nei dati
+### 14.3 What is missing in the data
 
-Tutte le variabili di ingresso sono **di superficie**. L'unico geopotenziale presente e'
-l'orografia statica. Il tempo alle medie latitudini e' pilotato dal flusso a 500 hPa, e
-i modelli che funzionano (GraphCast, Pangu) usano pochi istanti temporali ma **molti
-livelli verticali**. E' la lacuna piu' probabile fra tutte quelle elencate.
+All the input variables are **surface** ones. The only geopotential present is the static
+orography. Mid-latitude weather is driven by the 500 hPa flow, and the models that work
+(GraphCast, Pangu) use few time slots but **many vertical levels**. It is the most likely
+gap among all those listed.
 
-Scelta dei campi, guidata dalle variabili di riferimento di WeatherBench 2 e non
-dall'intuito: **z500** (pilota il flusso), **t850** (avvezione termica, standard per la
-neve), **t500** (stabilita' con t850), **q700** (umidita' disponibile). Esclusi u500 e
-v500: una rete convoluzionale ricava il vento geostrofico dal gradiente di z500, quindi
-sarebbero in gran parte ridondanti a costo pieno.
+Choice of the fields, guided by the reference variables of WeatherBench 2 and not by
+intuition: **z500** (drives the flow), **t850** (thermal advection, standard for snow),
+**t500** (stability together with t850), **q700** (available humidity). Excluded u500 and
+v500: a convolutional network derives the geostrophic wind from the z500 gradient, so
+they would be largely redundant at full cost.
 
-Verificato su file reali gia' scaricati, non solo in teoria: z500 fra 4886 e 5939 metri
-geopotenziali (gennaio europeo tipico 4900-5800), t500 fra -47 e -2 C, t850 fino a +29 C
-sul bordo sahariano del dominio, q700 fra 0 e 0,010 kg/kg. Anche il caso a rischio, due
-variabili sullo stesso livello nello stesso GRIB, si legge correttamente.
+Verified on real files already downloaded, not only in theory: z500 between 4886 and 5939
+geopotential metres (typical European January 4900-5800), t500 between -47 and -2 C, t850
+up to +29 C on the Saharan edge of the domain, q700 between 0 and 0.010 kg/kg. Even the
+risky case, two variables on the same level in the same GRIB, is read correctly.
 
-Abilitarli porta i canali da 245 a 341.
+Enabling them brings the channels from 245 to 341.
 
-### 14.4 Due checkpoint perduti, e la protezione che mancava
+### 14.4 Two checkpoints lost, and the protection that was missing
 
-La cartella di destinazione di un addestramento **non dipende dall'architettura**:
-`models/fold_00` per tutte. Due corse lanciate insieme finiscono nello stesso posto e la
-seconda sovrascrive la prima appena migliora. E' accaduto: persi i pesi del modello a
-piena scala e quelli del rivale, senza un solo messaggio.
+The destination folder of a training run **does not depend on the architecture**:
+`models/fold_00` for all of them. Two runs launched together end up in the same place and
+the second overwrites the first as soon as it improves. It happened: the weights of the
+full-scale model and those of the rival were lost, without a single message.
 
-Il campo per separarle, `paths.models_subdir`, esisteva: l'errore e' stato dell'operatore.
-Il difetto del codice era un altro e piu' grave: i metadati **non registravano
-l'architettura**, quindi un checkpoint su disco era indistinguibile da uno prodotto da
-un'altra rete. Ora l'architettura sta nei metadati, il caricamento la verifica e l'avvio
-rifiuta di scrivere sopra un'architettura diversa.
+The field to separate them, `paths.models_subdir`, existed: the mistake was the
+operator's. The defect in the code was another one and more serious: the metadata **did
+not record the architecture**, so a checkpoint on disk was indistinguishable from one
+produced by another network. Now the architecture is in the metadata, loading verifies
+it, and startup refuses to write over a different architecture.
 
-### 14.5 Ordine dei prossimi interventi, per effetto atteso
+### 14.5 Order of the next interventions, by expected effect
 
-1. **Piu' passi di ottimizzazione.** E' il vincolo che lega tutto il resto.
-2. **Piu' anni.** 2022 e 2023 in scaricamento portano le finestre da 961 a circa 1750.
-3. **Livelli di pressione.** In scaricamento, ~2,4 GB.
-4. **Finestra vista piu' larga**, per separare il ritaglio dall'architettura.
-5. **Architettura.** Il rivale a contesto globale e' cinque volte piu' piccolo e tre
-   volte piu' veloce sul dominio intero: a parita' di ore di CPU concede piu' passi, che
-   per il punto 1 e' il vantaggio che conta.
+1. **More optimization steps.** It is the constraint that ties everything else.
+2. **More years.** 2022 and 2023, currently downloading, bring the windows from 961 to
+   about 1750.
+3. **Pressure levels.** Downloading, ~2.4 GB.
+4. **Wider window seen**, to separate the crop from the architecture.
+5. **Architecture.** The global-context rival is five times smaller and three times
+   faster on the whole domain: at equal CPU hours it allows more steps, which by point 1
+   is the advantage that counts.
 
-### 14.6 Quanto vale il modello contro il non fare nulla
+### 14.6 How much the model is worth against doing nothing
 
-La media su nove scadenze nasconde il numero che conta. Errore quadratico medio della
-temperatura in gradi, split di test, 241 finestre, confronto con la persistenza diurna
-("domani come ieri alla stessa ora"):
+The average over nine leads hides the number that matters. Root mean square error of
+temperature in degrees, test split, 241 windows, comparison with diurnal persistence
+("tomorrow like yesterday at the same hour"):
 
-| scadenza | ore avanti | modello | ieri stessa ora | guadagno |
+| lead | hours ahead | model | yesterday same hour | gain |
 |---|---|---|---|---|
-| 0 | +12 | 1,866 | 2,429 | +23,2 % |
-| 1 | +18 | 2,124 | 2,409 | +11,8 % |
-| 2 | +24 | 2,270 | 2,404 | **+5,5 %** |
-| 3 | +36 | 2,785 | 3,208 | +13,2 % |
-| 4 | +42 | 2,924 | 3,232 | +9,5 % |
-| 5 | +48 | 2,992 | 3,237 | +7,6 % |
-| 6 | +60 | 3,278 | 3,711 | +11,7 % |
-| 7 | +66 | 3,335 | 3,717 | +10,3 % |
-| 8 | +72 | 3,322 | 3,685 | +9,8 % |
+| 0 | +12 | 1.866 | 2.429 | +23.2% |
+| 1 | +18 | 2.124 | 2.409 | +11.8% |
+| 2 | +24 | 2.270 | 2.404 | **+5.5%** |
+| 3 | +36 | 2.785 | 3.208 | +13.2% |
+| 4 | +42 | 2.924 | 3.232 | +9.5% |
+| 5 | +48 | 2.992 | 3.237 | +7.6% |
+| 6 | +60 | 3.278 | 3.711 | +11.7% |
+| 7 | +66 | 3.335 | 3.717 | +10.3% |
+| 8 | +72 | 3.322 | 3.685 | +9.8% |
 
-Il guadagno e' minimo alle scadenze multiple di 24 ore, dove la persistenza diurna
-coincide con la persistenza semplice ed e' quindi al suo massimo di forza. A ventiquattro
-ore il modello batte del **5,5%** l'ipotesi di non fare nulla.
+The gain is smallest at the leads that are multiples of 24 hours, where diurnal
+persistence coincides with simple persistence and is therefore at its strongest. At
+twenty-four hours the model beats the do-nothing hypothesis by **5.5%**.
 
-Questo, e non il valore assoluto di 2,27 gradi, e' il difetto: 2,40 gradi si ottengono
-senza alcun modello. Cio' che il modello ha imparato e' il ciclo giornaliero, che gli era
-gia' dato dall'ancoraggio, piu' un lisciamento locale. La dinamica, cioe' il fatto che
-domani arrivi aria diversa da altrove, non c'e'.
+This, and not the absolute value of 2.27 degrees, is the defect: 2.40 degrees are
+obtained without any model. What the model has learned is the daily cycle, which was
+already given to it by the anchoring, plus a local smoothing. The dynamics, that is the
+fact that tomorrow different air arrives from elsewhere, is not there.
 
-Le tre misure di questa giornata convergono: campo recettivo efficace di 130 km, nessuna
-variabile in quota, 2,7 visite per finestra in tutto l'addestramento. Per imparare la
-dinamica mancano contemporaneamente la portata spaziale, l'informazione sul flusso e il
-tempo di calcolo. Nessuna delle tre da sola spiegherebbe il risultato.
+The three measurements of this day converge: effective receptive field of 130 km, no
+upper-level variable, 2.7 visits per window over the whole training. To learn the
+dynamics, spatial reach, information on the flow and compute time are all missing at the
+same time. None of the three alone would explain the result.
 
-Soglia dichiarata dall'utente: sotto 2 gradi a ventiquattro ore. Serve portare il
-guadagno sulla persistenza dal 5,5% al 17%, cioe' triplicarlo.
+Threshold declared by the user: below 2 degrees at twenty-four hours. The gain over
+persistence has to go from 5.5% to 17%, that is it has to triple.
 
-## 15. Finestra intera, perdita verificata, incertezza giudicata
+## 15. Whole window, verified loss, judged uncertainty
 
-Questa sezione copre la giornata del 18 agosto 2026. Ogni numero viene da uno script in
-`tmp/diagnostica/`, non da un'aspettativa.
+This section covers the day of 18 August 2026. Every number comes from a script in
+`tmp/diagnostica/`, not from an expectation.
 
-### 15.1 Si addestra sul dominio intero
+### 15.1 Training on the whole domain
 
-`crop_size: null`, `batch_size: 1`. Il ritaglio 96x96 addestrava la rete dentro un
-orizzonte artificiale: oltre il bordo non c'era nulla da guardare, quindi la rete non
-poteva imparare a usare informazione che in previsione le viene comunque data.
+`crop_size: null`, `batch_size: 1`. The 96x96 crop trained the network inside an
+artificial horizon: beyond the border there was nothing to look at, so the network could
+not learn to use information that at forecast time is given to it anyway.
 
-Costo misurato con `tmp/diagnostica/finestra_piena.py`, con un addestramento in corso in
-parallelo:
+Cost measured with `tmp/diagnostica/finestra_piena.py`, with a training run going on in
+parallel:
 
-| configurazione | nucleo globale | rete a U |
+| configuration | global core | U-net |
 |---|---|---|
-| 1 ritaglio 96 | 189 ms | 2251 ms |
-| 4 ritagli 96 | 800 ms | 3343 ms |
-| 1 ritaglio 192 | 1098 ms | 3480 ms |
-| dominio intero 261x401 | **3000 ms** | **10499 ms** |
+| 1 crop of 96 | 189 ms | 2251 ms |
+| 4 crops of 96 | 800 ms | 3343 ms |
+| 1 crop of 192 | 1098 ms | 3480 ms |
+| whole domain 261x401 | **3000 ms** | **10499 ms** |
 
-Per milione di punti previsti: 21.705 ms con quattro ritagli, 28.660 con il dominio
-intero. Il dominio intero e' circa **un terzo meno efficiente per punto**, perche' il
-costo dell'attenzione cresce col quadrato del numero di token. Si paga perche' rimuove un
-difetto dell'addestramento, non perche' convenga.
+Per million predicted points: 21,705 ms with four crops, 28,660 with the whole domain.
+The whole domain is about **a third less efficient per point**, because the cost of
+attention grows with the square of the number of tokens. It is paid because it removes a
+defect of the training, not because it is convenient.
 
-### 15.2 La perdita: due sospetti smentiti, un difetto trovato
+### 15.2 The loss: two suspicions disproved, one defect found
 
-Controllata misurando (`tmp/diagnostica/verifica_perdita.py`), non rileggendola.
+Checked by measuring (`tmp/diagnostica/verifica_perdita.py`), not by re-reading it.
 
-| sospetto | esito | misura |
+| suspicion | outcome | measurement |
 |---|---|---|
-| il termine spettrale dipende dalla dimensione del ritaglio | **smentito** | 0,42 / 0,44 / 0,43 con lati 48, 96, 261 |
-| la protezione di Huber sulle code non entra mai in gioco | **smentito** | 37,8% dei punti piovosi oltre beta = 1, massimo normalizzato 6,1 |
-| il limite sulla log-varianza e' innocuo | **difetto vero** | gradiente **esattamente nullo** fuori dall'intervallo: 0,000000 a log-varianza 15 |
+| the spectral term depends on the crop size | **disproved** | 0.42 / 0.44 / 0.43 with sides 48, 96, 261 |
+| the Huber protection on the tails never comes into play | **disproved** | 37.8% of the rainy points beyond beta = 1, normalized maximum 6.1 |
+| the limit on the log-variance is harmless | **real defect** | gradient **exactly zero** outside the interval: 0.000000 at log-variance 15 |
 
-Il taglio rigido rendeva muto per sempre un canale spinto fuori dall'intervallo.
-Sostituito con `soft_clamp`, due softplus specchiate: deviazione 0,0009 a sette unita'
-dentro, 0,049 a tre unita' dentro, gradiente 3,3e-3 a 15 e 1,5e-7 a 25.
+The hard clipping made a channel pushed outside the interval mute forever. Replaced with
+`soft_clamp`, two mirrored softplus: deviation 0.0009 seven units inside, 0.049 three
+units inside, gradient 3.3e-3 at 15 and 1.5e-7 at 25.
 
-Nella stessa occasione i pesi della perdita sono diventati **obbligatori**: erano letti
-con un default per nome, e rinominare `precip_occurrence` avrebbe fatto passare quel
-termine da 0,5 a 1,0 in silenzio. Ora l'assenza di un nome ferma la costruzione, e
-`spectral: 0.0` e' scritto in `configs/default.yaml` perche' resti una scelta.
+On the same occasion the loss weights became **mandatory**: they were read with a default
+by name, and renaming `precip_occurrence` would have silently moved that term from 0.5 to
+1.0. Now the absence of a name stops the construction, and `spectral: 0.0` is written in
+`configs/default.yaml` so that it stays a choice.
 
-### 15.3 L'incertezza dichiarata ora viene giudicata
+### 15.3 The declared uncertainty is now judged
 
-Il progetto promette una previsione che dice quanto e' sicura, e nessuna metrica la
-leggeva: la testa gaussiana poteva annunciare qualunque varianza. `evaluate.py` raccoglie
-`t2m_sigma` e produce tre righe per scadenza:
+The project promises a forecast that says how confident it is, and no metric was reading
+it: the Gaussian head could announce any variance. `evaluate.py` collects `t2m_sigma` and
+produces three rows per lead:
 
-- `spread_celsius`: incertezza media dichiarata, in gradi;
-- `spread_skill_ratio`: dispersione diviso errore quadratico. **1 e' il valore giusto**,
-  sotto 1 il modello e' troppo sicuro;
-- `coverage_90`: quota di osservazioni entro l'intervallo al 90%, deve valere 0,90.
+- `spread_celsius`: mean declared uncertainty, in degrees;
+- `spread_skill_ratio`: spread divided by root mean square error. **1 is the right
+  value**, below 1 the model is too confident;
+- `coverage_90`: share of observations inside the 90% interval, it must be 0.90.
 
-Le righe non esistono per i modelli che non dichiarano incertezza, come la persistenza.
-Le valutazioni salvate prima di oggi non le contengono: il notebook lo dice invece di
-fallire, e per ottenerle basta rieseguire `evaluate_model.py`.
+The rows do not exist for the models that do not declare uncertainty, such as
+persistence. The evaluations saved before today do not contain them: the notebook says so
+instead of failing, and to obtain them it is enough to re-run `evaluate_model.py`.
 
-### 15.4 Notebook di collaudo
+### 15.4 Acceptance notebook
 
-`notebooks/03_collaudo.ipynb`, generato da `scripts/build_notebooks.py`. Sette sezioni:
-coerenza degli artefatti e curva di apprendimento, guadagno per scadenza con le etichette
-in chiaro, controllo esplicito dell'obiettivo dei 2 gradi a 24 ore con il guadagno
-necessario, taratura dell'incertezza, diagramma di affidabilita' con la trappola
-dell'accuratezza sugli eventi rari, mappa dell'errore con Vigo di Cadore, previsto contro
-osservato con il controllo della sfumatura via deviazione standard spaziale.
+`notebooks/03_collaudo.ipynb`, generated by `scripts/build_notebooks.py`. Seven sections:
+consistency of the artefacts and learning curve, gain per lead with the labels spelled
+out, explicit check of the 2 degrees at 24 hours goal with the required gain, calibration
+of the uncertainty, reliability diagram with the trap of accuracy on rare events, error
+map with Vigo di Cadore, predicted against observed with the blurring check via spatial
+standard deviation.
 
-Eseguito contro il fold 0. Due cose trovate mentre girava: la valutazione salvata precede
-le metriche di incertezza, e la mappa d'errore a **otto** finestre esaurisce la memoria se
-c'e' un addestramento in corso, per cui il notebook ne usa quattro.
+Run against fold 0. Two things found while it was running: the saved evaluation predates
+the uncertainty metrics, and the error map over **eight** windows exhausts the memory if
+a training run is in progress, which is why the notebook uses four.
 
-### 15.5 Codice nuovo e spento
+### 15.5 New code, switched off
 
-| dove | che cosa | perche' e' spento |
+| where | what | why it is off |
 |---|---|---|
-| `src/dwf/optim.py` | CMuon con ortogonalizzazione di Newton-Schulz, ramo AdamW per i tensori 1-D, stem e uscita | ortogonalizzare costa 107 ms contro 42, il passo va da 235 a 319 ms: va confrontato **a pari tempo di calcolo** |
-| `global_network.py` | attention sink (chiave e valore in piu', con valore appreso) | mai misurato su questa scala |
-| `global_network.py` | contesto compresso HCA, 33x51 -> 9x13 token, iniezione 1x1 inizializzata a zero | idem; l'iniezione a zero garantisce che accenderlo non cambi il punto di partenza |
-| 14 campi invarianti ERA5 | scaricati (4,0 MB, 143 s) e verificati uno per uno | solo 8 sono continui e utilizzabili; `dl` e' inutilizzabile grezzo (media 1130 m, valori di riempimento fuori dai laghi), i codici non sono numeri |
+| `src/dwf/optim.py` | CMuon with Newton-Schulz orthogonalization, AdamW branch for the 1-D tensors, stem and output | orthogonalizing costs 107 ms against 42, the step goes from 235 to 319 ms: it has to be compared **at equal compute time** |
+| `global_network.py` | attention sink (one extra key and value, with a learned value) | never measured at this scale |
+| `global_network.py` | compressed HCA context, 33x51 -> 9x13 tokens, 1x1 injection initialized to zero | same; the zero injection guarantees that switching it on does not change the starting point |
+| 14 ERA5 invariant fields | downloaded (4.0 MB, 143 s) and verified one by one | only 8 are continuous and usable; `dl` is unusable raw (mean 1130 m, fill values outside the lakes), the codes are not numbers |
 
-Due risultati dei test su Newton-Schulz che vale la pena ricordare: l'iterazione quintica
-**non** converge all'identita' (punto fisso fra 0,68 e 1,14), e cinque passi **non
-bastano** su gradienti degeneri (da 1e4 si arriva a 37; con dieci passi a 1,7).
+Two results of the tests on Newton-Schulz worth remembering: the quintic iteration does
+**not** converge to the identity (fixed point between 0.68 and 1.14), and five steps are
+**not enough** on degenerate gradients (from 1e4 you get to 37; with ten steps to 1.7).
 
-### 15.6 Decisione aperta per l'utente
+### 15.6 Open decision for the user
 
-Il default di `model.architecture` resta `unet`. Il nucleo globale ha un quinto dei
-parametri, e' 3,5 volte piu' veloce sul dominio intero e ha vinto il confronto in
-validazione (0,9755 contro 1,3031), ma non ha ancora numeri sul blocco di test. Cambiare
-un default condiviso senza quei numeri e' esattamente cio' che questo progetto evita.
+The default of `model.architecture` stays `unet`. The global core has a fifth of the
+parameters, is 3.5 times faster on the whole domain and won the comparison on validation
+(0.9755 against 1.3031), but it does not yet have numbers on the test block. Changing a
+shared default without those numbers is exactly what this project avoids.
