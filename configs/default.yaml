@@ -141,6 +141,11 @@ training:
   # quindi in inferenza si applica alla griglia intera.
   crop_size: 96
   samples_per_epoch: 512
+  # Quante finestre temporali distinte compongono un lotto. Con 1 il gradiente di ogni
+  # passo descrive un solo giorno, e le peculiarita' di quel giorno pesano come se
+  # fossero regola; alzarlo costa una lettura in piu' per finestra aggiunta, perche' la
+  # cache del lettore e' dimensionata sul gruppo.
+  windows_per_batch: 1
   learning_rate: 0.0003
   # Andamento del passo di apprendimento: `constant` o `cosine` (riscaldamento poi
   # decadimento a coseno fino al 5% del passo pieno). Il valore predefinito resta
