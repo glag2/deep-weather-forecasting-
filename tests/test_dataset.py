@@ -514,6 +514,90 @@ def test_i_confini_del_blocco_sono_semiaperti(config: Config) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Ancoraggio dell'occorrenza
+# --------------------------------------------------------------------------- #
+
+
+def _finestra_pioggia(config: Config, piove_ieri: bool) -> dict[str, np.ndarray]:
+    """Finestra sintetica in cui la pioggia di ieri e' accesa o spenta ovunque."""
+    totale = config.windows.input_slots + config.windows.output_slots
+    valore = 1.0 if piove_ieri else 0.0
+    return {
+        "t2m": np.zeros((totale, 4, 4), dtype=np.float32),
+        "tp": np.full((totale, 4, 4), valore, dtype=np.float32),
+        "sf": np.zeros((totale, 4, 4), dtype=np.float32),
+    }
+
+
+def _con_ampiezza(config: Config, ampiezza: float) -> Config:
+    return config.model_copy(
+        update={"model": config.model.model_copy(update={"occurrence_anchor_logit": ampiezza})}
+    )
+
+
+def test_senza_ampiezza_la_pioggia_non_riceve_riferimento(
+    config: Config, layout: InputLayout
+) -> None:
+    """Il default deve lasciare il comportamento identico a prima della modifica."""
+    from dwf.data.dataset import diurnal_baselines
+
+    riferimenti = diurnal_baselines(
+        _con_ampiezza(config, 0.0), stats_neutre(layout), _finestra_pioggia(config, True)
+    )
+    assert "tp" not in riferimenti
+    assert "t2m" in riferimenti
+
+
+@pytest.mark.parametrize(("piove_ieri", "segno"), [(True, +1.0), (False, -1.0)])
+def test_il_riferimento_di_pioggia_e_un_logit_con_segno(
+    config: Config, layout: InputLayout, piove_ieri: bool, segno: float
+) -> None:
+    from dwf.data.dataset import diurnal_baselines
+
+    ampiezza = 1.1
+    riferimenti = diurnal_baselines(
+        _con_ampiezza(config, ampiezza),
+        stats_neutre(layout),
+        _finestra_pioggia(config, piove_ieri),
+    )
+    atteso = segno * ampiezza
+    assert riferimenti["tp"].shape[0] == config.windows.output_slots
+    assert torch.allclose(riferimenti["tp"], torch.full_like(riferimenti["tp"], atteso))
+
+
+def test_l_ancoraggio_tocca_il_logit_di_occorrenza_e_non_la_quantita(config: Config) -> None:
+    """Sommare alla quantita' invece che al logit sposterebbe i millimetri previsti."""
+    from dwf.models.heads import OutputLayout
+
+    uscita = OutputLayout.from_targets(config.targets, config.windows.output_slots)
+    previsione = torch.zeros(1, uscita.total_channels, 3, 3)
+    occorrenza = uscita.block("tp", "occurrence_logit")
+    quantita = uscita.block("tp", "amount")
+
+    ancorata = uscita.apply_anchor(
+        previsione, {"tp": torch.full((1, config.windows.output_slots, 3, 3), 1.1)}
+    )
+
+    assert torch.allclose(
+        ancorata[:, occorrenza.start : occorrenza.stop],
+        torch.full((1, occorrenza.n_channels, 3, 3), 1.1),
+    )
+    assert torch.all(ancorata[:, quantita.start : quantita.stop] == 0.0)
+
+
+def test_una_testa_senza_componente_ancorabile_viene_rifiutata(config: Config) -> None:
+    """`sf` e' una frazione: ancorarla come le altre non avrebbe lo stesso significato."""
+    from dwf.models.heads import OutputLayout
+
+    uscita = OutputLayout.from_targets(config.targets, config.windows.output_slots)
+    previsione = torch.zeros(1, uscita.total_channels, 3, 3)
+    with pytest.raises(ValueError, match="ancorabil"):
+        uscita.apply_anchor(
+            previsione, {"sf": torch.zeros(1, config.windows.output_slots, 3, 3)}
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Impronta dei dati
 # --------------------------------------------------------------------------- #
 

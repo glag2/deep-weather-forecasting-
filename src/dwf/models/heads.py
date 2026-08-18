@@ -25,6 +25,14 @@ HEAD_COMPONENTS: dict[str, tuple[str, ...]] = {
     "fraction_of": ("fraction_logit",),
 }
 
+# Quale componente riceve l'ancoraggio alla persistenza diurna, per tipo di testa.
+# Una testa assente qui non e' ancorabile: e' un errore, non un caso da ignorare in
+# silenzio, perche' significherebbe addestrare senza il riferimento che si crede attivo.
+ANCORA_PER_TESTA: dict[str, str] = {
+    "gaussian": "mean",
+    "hurdle": "occurrence_logit",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ChannelBlock:
@@ -152,19 +160,23 @@ class OutputLayout:
         lo scarto da quel riferimento: un bersaglio di ampiezza molto minore e centrato
         su zero, quindi meglio condizionato.
 
-        Tocca la sola componente ``mean``: la log-varianza descrive l'incertezza dello
-        scarto e non va traslata.
+        Per una testa gaussiana tocca la sola componente ``mean``: la log-varianza
+        descrive l'incertezza dello scarto e non va traslata. Per una testa ``hurdle``
+        tocca il logit di occorrenza, e il riferimento arriva gia' espresso come
+        scostamento in logit, non come probabilita': sommare qui evita di dover
+        decidere in questo punto quanta fiducia dare alla persistenza.
         """
         if not baselines:
             return prediction
         corretta = prediction.clone()
         for variabile, riferimento in baselines.items():
-            if self.head_of(variabile) != "gaussian":
+            componente = ANCORA_PER_TESTA.get(self.head_of(variabile))
+            if componente is None:
                 raise ValueError(
-                    f"L'ancoraggio vale solo per le teste gaussiane, {variabile!r} ha "
-                    f"testa {self.head_of(variabile)!r}"
+                    f"Nessuna componente ancorabile per {variabile!r}, che ha testa "
+                    f"{self.head_of(variabile)!r}: ancorabili {sorted(ANCORA_PER_TESTA)}"
                 )
-            blocco = self.block(variabile, "mean")
+            blocco = self.block(variabile, componente)
             attesa = prediction[:, blocco.start : blocco.stop].shape
             if tuple(riferimento.shape) != tuple(attesa):
                 raise ValueError(

@@ -262,14 +262,23 @@ def diurnal_baselines(
         diurnal_reference_index(scadenza, input_slots, slot_al_giorno)
         for scadenza in range(config.windows.output_slots)
     ]
+    ampiezza_occorrenza = float(getattr(config.model, "occurrence_anchor_logit", 0.0))
     riferimenti: dict[str, torch.Tensor] = {}
     for spec in target_specs(config):
-        if spec.head != "gaussian":
-            continue
         if spec.name not in window:
-            raise DatasetError(f"Manca la variabile {spec.name!r} per l'ancoraggio")
-        valori = stats.normalize(spec.name, window[spec.name][indici])
-        riferimenti[spec.name] = torch.from_numpy(np.ascontiguousarray(valori))
+            if spec.head == "gaussian":
+                raise DatasetError(f"Manca la variabile {spec.name!r} per l'ancoraggio")
+            continue
+        if spec.head == "gaussian":
+            valori = stats.normalize(spec.name, window[spec.name][indici])
+            riferimenti[spec.name] = torch.from_numpy(np.ascontiguousarray(valori))
+        elif spec.head == "hurdle" and ampiezza_occorrenza > 0.0 and spec.threshold is not None:
+            # Lo scarto viaggia gia' in logit: chi lo somma non deve sapere come e'
+            # stato costruito, e l'ampiezza resta un solo numero in configurazione.
+            # +ampiezza dove ieri alla stessa ora pioveva, -ampiezza dove non pioveva.
+            occorrenza = (window[spec.name][indici] > spec.threshold).astype(np.float32)
+            scarto = ampiezza_occorrenza * (2.0 * occorrenza - 1.0)
+            riferimenti[spec.name] = torch.from_numpy(np.ascontiguousarray(scarto))
     return riferimenti
 
 

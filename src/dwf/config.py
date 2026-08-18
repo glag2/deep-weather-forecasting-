@@ -334,6 +334,14 @@ class ModelConfig(_Base):
     # stessa ora del giorno invece del valore assoluto. Resta configurabile perche' il
     # guadagno va misurato, non dato per scontato.
     anchor_diurnal: bool = True
+    # Ampiezza, in logit, dell'ancoraggio delle teste di occorrenza alla persistenza
+    # diurna. A 0 l'uscita e' identica a prima e nulla cambia. Sopra 0 la rete parte
+    # dalla risposta "come ieri alla stessa ora" e impara lo scarto, esattamente come
+    # gia' fanno le teste gaussiane. Serve perche' la probabilita' di pioggia misurata
+    # varia con la scadenza circa nove volte meno del vero, e alla scadenza piu' breve
+    # perde contro la persistenza. Con 1.1 si parte da circa 0,75 dove ieri pioveva e
+    # 0,25 dove non pioveva.
+    occurrence_anchor_logit: Annotated[float, Field(ge=0.0, le=4.0)] = 0.0
     # Nome della variante di blocco da usare nel corpo della rete.
     variant: str = "conv"
 
