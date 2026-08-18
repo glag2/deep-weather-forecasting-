@@ -300,6 +300,10 @@ def train_fold(
     dataset_val = WeatherWindowDataset(
         config, input_layout, stats, starts_val, reader,
         crop_size=crop, crops_per_window=crops, seed=config.training.seed + 1000 + fold,
+        # La validazione decide quale epoca conservare: se cambia il ritaglio a ogni
+        # epoca, parte della decisione la prende il caso. Un salto osservato da 2,299 a
+        # 0,976 fra due epoche consecutive era di questa natura, non apprendimento.
+        deterministic_crops=True,
     )
 
     batch_per_epoca = max(1, config.training.samples_per_epoch // config.training.batch_size)

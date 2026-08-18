@@ -468,6 +468,7 @@ class WeatherWindowDataset(Dataset):
         crop_size: int | None = None,
         crops_per_window: int = 1,
         seed: int = 0,
+        deterministic_crops: bool = False,
     ) -> None:
         if not starts:
             raise DatasetError(
@@ -485,6 +486,8 @@ class WeatherWindowDataset(Dataset):
         self.output_slots = config.windows.output_slots
         self.slot_hours = tuple(config.time.slot_hours)
         self.anchor_diurnal = config.model.anchor_diurnal
+        self.deterministic_crops = deterministic_crops
+        self._seed = seed
         self._rng = np.random.default_rng(seed)
 
         altezza, larghezza = reader.shape
@@ -507,7 +510,7 @@ class WeatherWindowDataset(Dataset):
         totale = self.input_slots + self.output_slots
 
         finestra = self.reader.read_window(inizio, totale)
-        riga, colonna = self._crop_origin()
+        riga, colonna = self._crop_origin(index)
         ritagliata = self._crop(finestra, riga, colonna)
 
         ingresso = {
@@ -574,12 +577,19 @@ class WeatherWindowDataset(Dataset):
             for nome, valore in diurnal_baselines(self.config, self.stats, window).items()
         }
 
-    def _crop_origin(self) -> tuple[int, int]:
+    def _crop_origin(self, index: int) -> tuple[int, int]:
         if self.crop_size is None:
             return 0, 0
         altezza, larghezza = self.reader.shape
-        riga = int(self._rng.integers(0, altezza - self.crop_size + 1))
-        colonna = int(self._rng.integers(0, larghezza - self.crop_size + 1))
+        if self.deterministic_crops:
+            # Il ritaglio dipende solo dall'indice, non da quante volte il dataset e'
+            # stato percorso: in validazione un ritaglio diverso a ogni epoca aggiunge
+            # rumore proprio alla misura che decide quale epoca conservare.
+            generatore = np.random.default_rng((self._seed, index))
+        else:
+            generatore = self._rng
+        riga = int(generatore.integers(0, altezza - self.crop_size + 1))
+        colonna = int(generatore.integers(0, larghezza - self.crop_size + 1))
         return riga, colonna
 
     def _crop(

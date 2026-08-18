@@ -651,3 +651,45 @@ def test_un_checkpoint_senza_impronta_viene_dichiarato_non_verificabile(
         avvisi = confronta_impronte(mancante, data_fingerprint(config, 0))
         assert len(avvisi) == 1
         assert "non dichiara" in avvisi[0]
+
+
+def test_i_ritagli_deterministici_non_cambiano_fra_due_percorrenze(
+    config: Config, layout: InputLayout
+) -> None:
+    """La validazione decide quale epoca conservare: un ritaglio diverso a ogni epoca
+    mette il caso dentro quella decisione."""
+    dataset = dataset_finto(
+        config, layout, crop_size=4, crops_per_window=2, deterministic_crops=True
+    )
+
+    prima = [dataset._crop_origin(i) for i in range(4)]
+    seconda = [dataset._crop_origin(i) for i in range(4)]
+
+    assert prima == seconda
+
+
+def test_i_ritagli_casuali_cambiano_fra_due_percorrenze(
+    config: Config, layout: InputLayout
+) -> None:
+    """In addestramento la variazione serve: e' l'aumento dei dati."""
+    dataset = dataset_finto(
+        config, layout, crop_size=4, crops_per_window=2, deterministic_crops=False
+    )
+
+    prima = [dataset._crop_origin(i) for i in range(8)]
+    seconda = [dataset._crop_origin(i) for i in range(8)]
+
+    assert prima != seconda
+
+
+def test_indici_diversi_danno_ritagli_diversi_anche_da_deterministici(
+    config: Config, layout: InputLayout
+) -> None:
+    """Fissare il ritaglio non deve voler dire guardare sempre lo stesso angolo."""
+    dataset = dataset_finto(
+        config, layout, crop_size=4, crops_per_window=8, deterministic_crops=True
+    )
+
+    origini = {dataset._crop_origin(i) for i in range(8)}
+
+    assert len(origini) > 1
