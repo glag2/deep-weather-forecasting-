@@ -34,6 +34,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import dask.array as da
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -169,11 +170,21 @@ def initialize_store(config: Config, *, overwrite: bool = False) -> Path:
     longitudini = config.region.longitudes
 
     forma = (len(tempi), len(latitudini), len(longitudini))
-    vuoto = np.full(forma, FILL_VALUE, dtype=np.float32)
+    # Array pigro, non materializzato: un array pieno di NaN per variabile pesa 1,12 GiB
+    # su questo dominio, quindi con tredici variabili l'inizializzazione chiedeva circa
+    # 15 GiB di RAM e si fermava con un errore di allocazione. Cosi' la memoria dipende
+    # dalla dimensione del blocco e non dal numero di variabili, e i NaN non transitano
+    # mai per la RAM tutti insieme.
+    vuoto = da.full(
+        forma,
+        FILL_VALUE,
+        dtype=np.float32,
+        chunks=(config.paths.chunk_slots, len(latitudini), len(longitudini)),
+    )
 
     dimensioni = ("slot", "latitude", "longitude")
     dataset = xr.Dataset(
-        {nome: (dimensioni, vuoto.copy()) for nome in dynamic_short_names(config)},
+        {nome: (dimensioni, vuoto) for nome in dynamic_short_names(config)},
         coords={
             "slot": np.arange(len(tempi), dtype=np.int32),
             "valid_time": ("slot", as_naive_utc(tempi)),
@@ -189,13 +200,8 @@ def initialize_store(config: Config, *, overwrite: bool = False) -> Path:
         },
     )
 
-    chunks = {
-        "slot": config.paths.chunk_slots,
-        "latitude": len(latitudini),
-        "longitude": len(longitudini),
-    }
     destinazione.parent.mkdir(parents=True, exist_ok=True)
-    dataset.chunk(chunks).to_zarr(destinazione, mode="w", consolidated=True)
+    dataset.to_zarr(destinazione, mode="w", consolidated=True)
     return destinazione
 
 

@@ -33,6 +33,7 @@ from dwf.data.ingest import (
     compute_stats,
     dynamic_short_names,
     flatten_accumulated,
+    initialize_store,
     open_grib,
     slot_positions,
 )
@@ -404,3 +405,52 @@ def test_le_istantanee_reali_coprono_tutti_gli_slot() -> None:
     with open_grib(percorso) as dataset:
         disponibili = set(pd.to_datetime(dataset.time.values))
     assert set(pd.to_datetime(as_naive_utc(tempi))) <= disponibili
+
+
+# --------------------------------------------------------------------------- #
+# Creazione dello store
+# --------------------------------------------------------------------------- #
+
+
+def test_lo_store_nasce_pigro_e_non_materializza_le_variabili(
+    config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Un array pieno per variabile pesa 1,12 GiB su questo dominio.
+
+    Con nove variabili di superficie l'inizializzazione ci stava per poco; aggiungendo
+    quattro campi in quota chiedeva circa 15 GiB e si fermava con un errore di
+    allocazione. Qui si vieta a `np.full` di produrre un array grande quanto lo store: se
+    qualcuno tornasse a materializzarlo, il test lo dice invece di lasciare che il difetto
+    ricompaia solo su una macchina con poca memoria.
+    """
+    vero_full = np.full
+    n_slot = len(config.time.slot_times())
+
+    def full_controllato(shape, *args, **kwargs):  # type: ignore[no-untyped-def]
+        # Un'allocazione per blocco e' corretta e necessaria: dask ne materializza uno
+        # per volta mentre scrive. Vietata e' solo quella che copre l'intero asse
+        # temporale, cioe' una variabile intera in memoria.
+        if isinstance(shape, tuple) and len(shape) == 3 and shape[0] == n_slot:
+            raise AssertionError(f"variabile materializzata in RAM: forma {shape}")
+        return vero_full(shape, *args, **kwargs)
+
+    monkeypatch.setattr(np, "full", full_controllato)
+    percorso = initialize_store(config)
+
+    with xr.open_zarr(percorso, consolidated=True) as store:
+        atteso = (
+            len(config.time.slot_times()),
+            len(config.region.latitudes),
+            len(config.region.longitudes),
+        )
+        for nome in dynamic_short_names(config):
+            assert store[nome].shape == atteso
+            assert store[nome].chunks[0][0] == config.paths.chunk_slots
+
+
+def test_uno_store_esistente_non_viene_sovrascritto_per_sbaglio(config: Config) -> None:
+    percorso = initialize_store(config)
+    (percorso / "segno.txt").write_text("presente", encoding="utf-8")
+
+    assert initialize_store(config) == percorso
+    assert (percorso / "segno.txt").exists()
