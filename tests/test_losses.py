@@ -26,6 +26,8 @@ from dwf.models.losses import (
     hurdle_amount_loss,
     hurdle_occurrence_loss,
     masked_mean,
+    soft_clamp,
+    spectral_amplitude_loss,
 )
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
@@ -221,11 +223,116 @@ def test_un_peso_nullo_annulla_il_contributo(
         precip_occurrence = 1.0
         precip_amount = 0.0
         snow_fraction = 0.0
+        spectral = 0.0
 
     criterio = CompositeLoss(layout, Pesi())
     previsione = torch.zeros(1, layout.total_channels, 4, 4)
     esito = criterio(previsione, batch_finto(config))
     assert float(esito.total) == pytest.approx(float(esito.components["tp_occurrence"]))
+
+
+class TestLimiteMorbido:
+    """Il limite sulla log-varianza non deve creare un canale muto per sempre."""
+
+    def test_nel_campo_utile_e_l_identita(self) -> None:
+        """Le log-varianze utili stanno fra -3 e +3: la' la distorsione e' sotto il millesimo.
+
+        Misurato: lo scarto vale 0,0009 a sette unita' dal limite e sale a 0,049 a tre, il
+        che e' il prezzo dichiarato per non avere una zona a gradiente nullo.
+        """
+        valori = torch.tensor([-3.0, -1.0, 0.0, 2.5, 3.0])
+        assert torch.allclose(soft_clamp(valori), valori, atol=1e-3)
+        assert abs(float(soft_clamp(torch.tensor([7.0]))) - 7.0) < 0.05
+
+    def test_fuori_dai_limiti_satura(self) -> None:
+        estremi = soft_clamp(torch.tensor([-1e3, 1e3]))
+        assert MIN_LOG_VAR - 0.01 <= float(estremi[0]) <= MIN_LOG_VAR + 0.01
+        assert MAX_LOG_VAR - 0.01 <= float(estremi[1]) <= MAX_LOG_VAR + 0.01
+
+    def test_il_gradiente_non_si_annulla_mai(self) -> None:
+        """Il difetto misurato del taglio secco: con log_var 15 il gradiente era 0,000000.
+
+        Un canale spinto oltre il limite da un passo troppo lungo non riceveva piu' alcuna
+        forza che lo riportasse dentro, e restava muto per il resto dell'addestramento.
+        """
+        secco = torch.tensor([[15.0]], requires_grad=True)
+        gaussian_nll(torch.zeros(1, 1), secco.clamp(MIN_LOG_VAR, MAX_LOG_VAR),
+                     torch.ones(1, 1)).backward()
+        assert float(secco.grad) == 0.0
+
+        morbido = torch.tensor([[15.0]], requires_grad=True)
+        gaussian_nll(torch.zeros(1, 1), morbido, torch.ones(1, 1)).backward()
+        assert float(morbido.grad) != 0.0
+
+    def test_resta_monotono(self) -> None:
+        """Una log-varianza maggiore deve restare una varianza maggiore.
+
+        Nella zona satura le differenze finiscono sotto la risoluzione di float32, quindi
+        la monotonia e' non stretta la' e stretta dentro l'intervallo utile: e' la
+        proprieta' che serve, perche' l'ordine fra due incertezze non deve invertirsi.
+        """
+        valori = torch.linspace(-30.0, 30.0, 200)
+        differenze = soft_clamp(valori).diff()
+        assert bool((differenze >= 0).all())
+
+        dentro = torch.linspace(-8.0, 8.0, 100)
+        assert bool((soft_clamp(dentro).diff() > 0).all())
+
+    def test_un_intervallo_vuoto_e_rifiutato(self) -> None:
+        with pytest.raises(ValueError, match="Intervallo vuoto"):
+            soft_clamp(torch.zeros(2), minimum=1.0, maximum=1.0)
+
+
+class TestTerminSpettrale:
+    def test_non_dipende_dalla_dimensione_del_campo(self) -> None:
+        """Misurato: 0,42 / 0,44 / 0,43 su lati 48, 96 e 261.
+
+        Conta perche' il peso in configurazione deve significare la stessa cosa quando si
+        passa dal ritaglio al dominio intero.
+        """
+        torch.manual_seed(0)
+        valori = [
+            float(
+                spectral_amplitude_loss(
+                    torch.randn(1, 9, lato, lato), torch.randn(1, 9, lato, lato)
+                )
+            )
+            for lato in (48, 96, 261)
+        ]
+        assert max(valori) / min(valori) < 1.15
+
+    def test_premia_l_ampiezza_corretta(self) -> None:
+        """Un campo sfumato deve costare piu' di uno con la struttura giusta spostata.
+
+        E' la ragione per cui il termine esiste: con il solo errore quadratico sfumare
+        conviene, e il modello sottostimava di 4,8 gradi l'escursione a mezzogiorno.
+        """
+        torch.manual_seed(0)
+        vero = torch.randn(1, 1, 32, 32)
+        sfumato = torch.nn.functional.avg_pool2d(vero, 4)
+        sfumato = torch.nn.functional.interpolate(sfumato, size=(32, 32), mode="bilinear")
+        spostato = torch.roll(vero, shifts=(3, 3), dims=(2, 3))
+
+        assert float(spectral_amplitude_loss(sfumato, vero)) > float(
+            spectral_amplitude_loss(spostato, vero)
+        )
+
+    def test_forme_incompatibili_sono_rifiutate(self) -> None:
+        with pytest.raises(ValueError, match="Forme incompatibili"):
+            spectral_amplitude_loss(torch.zeros(1, 1, 8, 8), torch.zeros(1, 1, 8, 4))
+
+
+def test_un_peso_non_dichiarato_ferma_la_costruzione(layout: OutputLayout) -> None:
+    """Un default silenzioso su un peso e' un difetto in attesa di un rinominamento."""
+
+    class PesiIncompleti:
+        gaussian = 1.0
+        precip_occurrence = 1.0
+        precip_amount = 1.0
+        snow_fraction = 1.0
+
+    with pytest.raises(ValueError, match="spectral"):
+        CompositeLoss(layout, PesiIncompleti())
 
 
 def test_un_bersaglio_mancante_e_segnalato(config: Config, layout: OutputLayout) -> None:

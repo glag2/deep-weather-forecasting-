@@ -60,6 +60,32 @@ def masked_mean(values: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor
     return (values * mask).sum() / peso
 
 
+def soft_clamp(
+    values: torch.Tensor, minimum: float = MIN_LOG_VAR, maximum: float = MAX_LOG_VAR
+) -> torch.Tensor:
+    """Limita `values` all'intervallo dato **senza annullare il gradiente ai bordi**.
+
+    Perche' non `clamp`. Il taglio secco ha gradiente esattamente nullo fuori
+    dall'intervallo: misurato, con log_var 15 il gradiente vale 0,000000. Un canale
+    spinto oltre il limite da un solo passo troppo lungo non riceve piu' alcuna forza che
+    lo riporti dentro, e resta muto per tutto il resto dell'addestramento. La zona non e'
+    attrattiva (appena sotto il limite il gradiente punta verso l'interno), quindi il
+    difetto e' raro, ma quando accade e' permanente e silenzioso.
+
+    Questa versione, costruita con due `softplus` speculari, e' misurata cosi': lo scarto
+    dall'identita' vale 0,0009 a sette unita' dal limite, 0,007 a cinque, 0,049 a tre. Le
+    log-varianze utili stanno fra -3 e +3, dove la distorsione e' sotto il millesimo.
+
+    Il gradiente decade in modo esponenziale ma non si annulla: 1,3e-1 a log_var 11,
+    3,3e-3 a 15, 1,5e-7 a 25. Un canale finito la' fuori rientra lentamente, invece di
+    restare fermo per sempre.
+    """
+    if maximum <= minimum:
+        raise ValueError(f"Intervallo vuoto: [{minimum}, {maximum}]")
+    dal_basso = minimum + F.softplus(values - minimum)
+    return maximum - F.softplus(maximum - dal_basso)
+
+
 def gaussian_nll(
     mean: torch.Tensor,
     log_var: torch.Tensor,
@@ -67,7 +93,7 @@ def gaussian_nll(
     mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Log-verosimiglianza negativa gaussiana, a meno di costanti additive."""
-    limitata = log_var.clamp(MIN_LOG_VAR, MAX_LOG_VAR)
+    limitata = soft_clamp(log_var)
     residuo = target - mean
     punto = 0.5 * (LOG_TWO_PI + limitata + residuo.square() * torch.exp(-limitata))
     return masked_mean(punto, mask)
@@ -155,13 +181,30 @@ def spectral_amplitude_loss(
 class CompositeLoss:
     """Somma pesata delle perdite di tutte le teste dichiarate nel layout."""
 
+    # Un peso letto con un default silenzioso e' un difetto in attesa: se un campo della
+    # configurazione viene rinominato, il termine corrispondente prende il valore di
+    # comodo invece di quello scelto, e la corsa sembra riuscita. I nomi vanno quindi
+    # dichiarati e la loro assenza deve fermare tutto.
+    NOMI_DEI_PESI = (
+        ("weight_gaussian", "gaussian"),
+        ("weight_occurrence", "precip_occurrence"),
+        ("weight_amount", "precip_amount"),
+        ("weight_fraction", "snow_fraction"),
+        ("weight_spectral", "spectral"),
+    )
+
     def __init__(self, layout: OutputLayout, weights: object) -> None:
         self.layout = layout
-        self.weight_gaussian = float(getattr(weights, "gaussian", 1.0))
-        self.weight_occurrence = float(getattr(weights, "precip_occurrence", 1.0))
-        self.weight_amount = float(getattr(weights, "precip_amount", 1.0))
-        self.weight_fraction = float(getattr(weights, "snow_fraction", 1.0))
-        self.weight_spectral = float(getattr(weights, "spectral", 0.0))
+        mancanti = [
+            nome for _, nome in self.NOMI_DEI_PESI if not hasattr(weights, nome)
+        ]
+        if mancanti:
+            raise ValueError(
+                f"Pesi della perdita incompleti: mancano {mancanti}. Dichiararli "
+                f"esplicitamente, anche a zero, invece di lasciarli al caso"
+            )
+        for attributo, nome in self.NOMI_DEI_PESI:
+            setattr(self, attributo, float(getattr(weights, nome)))
 
     def _combina(
         self, mask: torch.Tensor | None, spatial: torch.Tensor | None
@@ -263,5 +306,6 @@ __all__ = [
     "hurdle_amount_loss",
     "hurdle_occurrence_loss",
     "masked_mean",
+    "soft_clamp",
     "spectral_amplitude_loss",
 ]
