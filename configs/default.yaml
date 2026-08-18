@@ -136,10 +136,22 @@ model:
 training:
   seed: 1234
   epochs: 20
-  batch_size: 4
-  # Crop spaziale usato in training: il modello e completamente convoluzionale,
-  # quindi in inferenza si applica alla griglia intera.
-  crop_size: 96
+  # Un lotto e' una finestra intera: 245 canali x 261 x 401 sono 103 MB di solo ingresso,
+  # e la finestra porta con se' undici volte i punti di un ritaglio 96x96.
+  batch_size: 1
+  # `null` significa **finestra intera**, cioe' il dominio 261x401 come in previsione.
+  # Il ritaglio 96x96 addestrava il modello dentro un orizzonte artificiale: una struttura
+  # sinottica percorre 500-1000 km al giorno, ma oltre il bordo del ritaglio non c'era
+  # nulla da guardare, quindi la rete non poteva imparare a usare informazione che in
+  # previsione le viene invece data. Costo misurato per passo, rete globale, con un
+  # addestramento concorrente in corso: 800 ms con quattro ritagli 96, 3000 ms sul dominio
+  # intero, cioe' 21,7 contro 28,7 secondi per milione di punti previsti. Il dominio
+  # intero e' quindi circa un terzo meno efficiente per punto (l'attenzione cresce col
+  # quadrato dei token), e si paga volentieri perche' elimina un difetto di
+  # addestramento, non un dettaglio di prestazione.
+  # Sulla U-Net lo stesso passo costa 10.499 ms: un'altra ragione per cui il nucleo
+  # globale e' l'architettura di riferimento.
+  crop_size: null
   samples_per_epoch: 512
   # Quante finestre temporali distinte compongono un lotto. Con 1 il gradiente di ogni
   # passo descrive un solo giorno, e le peculiarita' di quel giorno pesano come se

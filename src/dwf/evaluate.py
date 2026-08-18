@@ -41,6 +41,7 @@ from dwf.data.dataset import (
 )
 from dwf.data.features import NormStats
 from dwf.models.heads import OutputLayout
+from dwf.models.losses import soft_clamp
 from dwf.tables import METRICS, RELIABILITY, cast_to_schema
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
@@ -75,6 +76,11 @@ class Prediction:
     lead: np.ndarray
     snow_probability: np.ndarray | None = None
     snow_occurrence: np.ndarray | None = None
+    # Deviazione standard prevista per la temperatura, in unita' normalizzate. Il progetto
+    # promette una previsione che dichiara la propria incertezza, e finora quell'incertezza
+    # non veniva confrontata con nulla: la testa gaussiana poteva prevedere qualunque
+    # varianza senza che una sola metrica se ne accorgesse.
+    t2m_sigma: np.ndarray | None = None
 
     def with_calibrated_tp(self, calibrator: ProbabilityCalibrator) -> Prediction:
         """Copia con le probabilita' di pioggia corrette dalla mappa di calibrazione.
@@ -102,7 +108,41 @@ class Prediction:
             lead=self.lead,
             snow_probability=neve,
             snow_occurrence=self.snow_occurrence,
+            t2m_sigma=self.t2m_sigma,
         )
+
+
+# Quota di osservazioni che deve cadere entro +-1,645 deviazioni standard se la
+# distribuzione prevista e' quella giusta.
+COPERTURA_NOMINALE = 0.90
+Z_NOVANTA = 1.6448536269514722
+
+
+def incertezza_dichiarata(
+    sigma: np.ndarray, errore: np.ndarray, scala: float
+) -> dict[str, float]:
+    """Giudica l'incertezza che il modello dichiara, invece di ignorarla.
+
+    Il progetto promette una previsione che dice quanto e' sicura, e senza queste metriche
+    quella promessa non era verificata da nulla: la testa gaussiana poteva annunciare
+    qualunque varianza e nessun numero se ne sarebbe accorto.
+
+    - ``spread_celsius``: l'incertezza media dichiarata, in gradi.
+    - ``spread_skill_ratio``: incertezza dichiarata diviso errore quadratico medio. Uno e'
+      il valore giusto; sotto uno il modello e' **troppo sicuro** e le sue barre d'errore
+      sono troppo strette, sopra uno e' troppo prudente.
+    - ``coverage_90``: quota di osservazioni cadute nell'intervallo al 90%. Deve valere
+      0,90; e' la stessa informazione del rapporto, ma nella forma in cui la usa chi legge
+      una previsione.
+    """
+    quadratico = float(np.sqrt(np.mean(errore**2)))
+    dispersione = float(np.sqrt(np.mean(sigma**2)))
+    dentro = float(np.mean(np.abs(errore) <= Z_NOVANTA * sigma))
+    return {
+        "spread_celsius": dispersione * scala,
+        "spread_skill_ratio": dispersione / quadratico if quadratico > 0 else float("nan"),
+        "coverage_90": dentro,
+    }
 
 
 def climatology_from_slots(
@@ -269,6 +309,7 @@ def collect_predictions(
     network.eval()
     generatore = np.random.default_rng(config.training.seed)
 
+    t2m_sigma: list[np.ndarray] = []
     t2m_pred: list[np.ndarray] = []
     t2m_vero: list[np.ndarray] = []
     tp_prob: list[np.ndarray] = []
@@ -293,6 +334,11 @@ def collect_predictions(
         )
 
         media = layout.select(previsione, "t2m", "mean")[0].numpy()
+        # La testa dichiara la log-varianza: la deviazione standard e' cio' che si puo'
+        # confrontare con l'errore vero, perche' ha le sue stesse unita'.
+        deviazione = torch.exp(
+            0.5 * soft_clamp(layout.select(previsione, "t2m", "log_var"))
+        )[0].numpy()
         probabilita = torch.sigmoid(
             layout.select(previsione, "tp", "occurrence_logit")
         )[0].numpy()
@@ -315,6 +361,7 @@ def collect_predictions(
         for slot in range(n_slot):
             istante = dataset.reader.valid_time(inizio + dataset.input_slots + slot)
             t2m_pred.append(media[slot].reshape(-1)[scelti])
+            t2m_sigma.append(deviazione[slot].reshape(-1)[scelti])
             t2m_vero.append(bersaglio_t2m[slot].reshape(-1)[scelti])
             tp_prob.append(probabilita[slot].reshape(-1)[scelti])
             tp_occ.append(bersaglio_tp[slot].reshape(-1)[scelti])
@@ -336,6 +383,7 @@ def collect_predictions(
         lead=np.concatenate(scadenze),
         snow_probability=np.concatenate(neve_prob) if neve_prob else None,
         snow_occurrence=np.concatenate(neve_occ) if neve_occ else None,
+        t2m_sigma=np.concatenate(t2m_sigma),
     )
 
 
@@ -401,6 +449,20 @@ def metrics_table(
                 "metric": "mae_celsius", "value": mae, "n_values": int(selezione.sum()),
             }
         )
+        if prediction.t2m_sigma is not None:
+            for nome, valore in incertezza_dichiarata(
+                prediction.t2m_sigma[selezione], errore_norm, scala
+            ).items():
+                righe.append(
+                    {
+                        "model": model, "split": split, "fold": fold, "variable": "t2m",
+                        "lead_slot": -1 if scadenza is None else scadenza,
+                        "month": -1 if mese is None else mese,
+                        "metric": nome, "value": valore,
+                        "n_values": int(selezione.sum()),
+                    }
+                )
+
         righe.append(
             {
                 "model": model, "split": split, "fold": fold, "variable": "tp",
@@ -600,6 +662,7 @@ def persistence_baseline(
 
 
 __all__ = [
+    "COPERTURA_NOMINALE",
     "SNOW_FRACTION_THRESHOLD",
     "ClassificationScore",
     "EvaluationError",
@@ -610,6 +673,7 @@ __all__ = [
     "classification_score",
     "climatology_from_slots",
     "collect_predictions",
+    "incertezza_dichiarata",
     "metrics_table",
     "persistence_baseline",
     "reliability_table",
