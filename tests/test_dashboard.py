@@ -19,6 +19,7 @@ from dwf.dashboard import (
     TECNOLOGIE,
     Riquadro,
     _accorcia,
+    accuratezze_ingannevoli,
     copertura_mensile,
     curva_apprendimento,
     informazioni_modello,
@@ -204,6 +205,83 @@ class TestMetriche:
         riepilogo = riepilogo_metriche(tabella)
         assert riepilogo.height == 1
         assert riepilogo["value"][0] == 1.0
+
+    def test_il_riepilogo_mette_per_prima_la_temperatura(self, config: Config) -> None:
+        """In ordine alfabetico la prima riga sarebbe l'accuratezza sulla neve.
+
+        E' la metrica piu' fraintendibile del progetto e non deve aprire la pagina.
+        """
+        self._scrivi(
+            config,
+            [
+                self._riga(variable="sf", metric="accuracy", value=0.85),
+                self._riga(variable="tp", metric="brier", value=0.18),
+                self._riga(variable="t2m", metric="rmse_celsius", value=2.9),
+            ],
+        )
+        tabella = metriche(config, 0, "test")
+        assert tabella is not None
+        riepilogo = riepilogo_metriche(tabella)
+        assert riepilogo["variable"].to_list() == ["t2m", "tp", "sf"]
+        assert riepilogo["metric"][0] == "rmse_celsius"
+
+    def test_il_riepilogo_mette_il_modello_prima_dei_riferimenti(
+        self, config: Config
+    ) -> None:
+        self._scrivi(
+            config,
+            [
+                self._riga(model="persistence", value=4.7),
+                self._riga(model="dwf", value=2.9),
+                self._riga(model="persistence_diurnal", value=3.2),
+            ],
+        )
+        tabella = metriche(config, 0, "test")
+        assert tabella is not None
+        assert riepilogo_metriche(tabella)["model"].to_list() == [
+            "dwf",
+            "persistence_diurnal",
+            "persistence",
+        ]
+
+    def test_segnala_l_accuratezza_battuta_dal_modello_muto(self, config: Config) -> None:
+        """Con frequenza di base 0,09 un modello muto ottiene 0,91."""
+        self._scrivi(
+            config,
+            [
+                self._riga(variable="sf", metric="accuracy", value=0.847),
+                self._riga(variable="sf", metric="base_rate", value=0.0908),
+            ],
+        )
+        tabella = metriche(config, 0, "test")
+        assert tabella is not None
+        segnalate = accuratezze_ingannevoli(tabella)
+        assert segnalate.height == 1
+        assert segnalate["variable"][0] == "sf"
+        assert segnalate["sempre_no"][0] == pytest.approx(0.9092)
+
+    def test_non_segnala_un_accuratezza_migliore_del_modello_muto(
+        self, config: Config
+    ) -> None:
+        self._scrivi(
+            config,
+            [
+                self._riga(variable="tp", metric="accuracy", value=0.709),
+                self._riga(variable="tp", metric="base_rate", value=0.345),
+            ],
+        )
+        tabella = metriche(config, 0, "test")
+        assert tabella is not None
+        assert accuratezze_ingannevoli(tabella).height == 0
+
+    def test_senza_frequenza_di_base_non_inventa_segnalazioni(
+        self, config: Config
+    ) -> None:
+        """Mancando il termine di confronto, il silenzio e' l'unica risposta onesta."""
+        self._scrivi(config, [self._riga(variable="sf", metric="accuracy", value=0.1)])
+        tabella = metriche(config, 0, "test")
+        assert tabella is not None
+        assert accuratezze_ingannevoli(tabella).height == 0
 
     def test_l_andamento_per_scadenza_esclude_l_aggregato(self, config: Config) -> None:
         self._scrivi(

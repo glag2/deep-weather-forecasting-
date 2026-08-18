@@ -42,6 +42,7 @@ from dwf.climate import (  # noqa: E402
 from dwf.config import Config  # noqa: E402
 from dwf.dashboard import (  # noqa: E402
     TECNOLOGIE,
+    accuratezze_ingannevoli,
     catalogo_ingressi,
     coerenza_artefatti,
     confronto_visivo,
@@ -333,6 +334,22 @@ elif sezione == "Prestazioni":
             "molto forte, e usare quella ingenua darebbe un vantaggio illusorio."
         )
         st.dataframe(riepilogo_metriche(tabella), width="stretch", hide_index=True)
+
+        ingannevoli = accuratezze_ingannevoli(tabella)
+        if ingannevoli.height:
+            righe = "\n".join(
+                f"- **{r['variable']}**, modello `{r['model']}`: accuratezza "
+                f"{r['accuratezza']:.3f}, ma rispondere sempre \"no\" darebbe "
+                f"{r['sempre_no']:.3f} (l'evento accade nel "
+                f"{r['frequenza_di_base'] * 100:.1f} % dei casi)."
+                for r in ingannevoli.iter_rows(named=True)
+            )
+            st.warning(
+                "Nella tabella qui sopra c'e' un'accuratezza piu' bassa di quella di un "
+                "modello muto. "
+                "Per gli eventi rari va letta insieme alla frequenza di base, oppure "
+                "sostituita dal Brier e dall'F1.\n\n" + righe
+            )
 
         st.subheader("Andamento con la scadenza")
         variabili = sorted(tabella["variable"].unique().to_list())

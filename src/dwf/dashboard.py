@@ -334,6 +334,35 @@ def metriche(config: Config, fold: int, split: str = "test") -> pl.DataFrame | N
     return selezione if selezione.height else None
 
 
+# L'ordine alfabetico metterebbe in cima "sf accuracy", che su una variabile presente
+# nel 9 % dei casi e' la metrica piu' facile da fraintendere. Le righe vengono quindi
+# ordinate per rilevanza: prima la temperatura, poi le probabilita', e dentro ciascuna
+# variabile prima gli errori e per ultime le quantita' che dipendono da una soglia.
+ORDINE_VARIABILI = ("t2m", "tp", "sf")
+ORDINE_METRICHE = (
+    "rmse_celsius",
+    "mae_celsius",
+    "brier",
+    "brier_skill_score",
+    "calibration_error",
+    "f1",
+    "precision",
+    "recall",
+    "accuracy",
+    "base_rate",
+    "decision_threshold",
+)
+ORDINE_MODELLI = ("dwf", "persistence_diurnal", "persistence")
+
+
+def _rango(valore: pl.Expr, ordine: tuple[str, ...]) -> pl.Expr:
+    """Posizione nell'ordine dato; le voci non elencate finiscono in fondo."""
+    rango = pl.lit(len(ordine), dtype=pl.Int32)
+    for posizione, voce in reversed(list(enumerate(ordine))):
+        rango = pl.when(valore == voce).then(pl.lit(posizione, dtype=pl.Int32)).otherwise(rango)
+    return rango
+
+
 def riepilogo_metriche(tabella: pl.DataFrame) -> pl.DataFrame:
     """Le metriche aggregate su tutti i mesi e tutte le scadenze, per modello.
 
@@ -343,8 +372,13 @@ def riepilogo_metriche(tabella: pl.DataFrame) -> pl.DataFrame:
     """
     return (
         tabella.filter((pl.col("month") == -1) & (pl.col("lead_slot") == -1))
+        .with_columns(
+            _rango(pl.col("variable"), ORDINE_VARIABILI).alias("_v"),
+            _rango(pl.col("metric"), ORDINE_METRICHE).alias("_m"),
+            _rango(pl.col("model"), ORDINE_MODELLI).alias("_o"),
+        )
+        .sort("_v", "variable", "_m", "metric", "_o", "model")
         .select("model", "variable", "metric", "value", "n_values")
-        .sort("variable", "metric", "model")
     )
 
 
@@ -359,6 +393,34 @@ def per_scadenza(tabella: pl.DataFrame, variabile: str, metrica: str) -> pl.Data
         )
         .select("model", "lead_slot", "value")
         .sort("lead_slot", "model")
+    )
+
+
+def accuratezze_ingannevoli(tabella: pl.DataFrame) -> pl.DataFrame:
+    """Casi in cui rispondere sempre "no" batterebbe l'accuratezza dichiarata.
+
+    Per una variabile rara l'accuratezza premia il silenzio: con frequenza di base
+    0,09 un modello muto ottiene 0,91. Confrontarla con ``1 - base_rate`` e' l'unico
+    modo per accorgersene leggendo la tabella.
+    """
+    aggregate = tabella.filter((pl.col("month") == -1) & (pl.col("lead_slot") == -1))
+    accuratezza = aggregate.filter(pl.col("metric") == "accuracy").select(
+        "model", "variable", pl.col("value").alias("accuratezza")
+    )
+    frequenza = (
+        aggregate.filter(pl.col("metric") == "base_rate")
+        .select("variable", pl.col("value").alias("frequenza_di_base"))
+        .unique(subset=["variable"])
+    )
+    if not accuratezza.height or not frequenza.height:
+        return accuratezza.head(0).with_columns(
+            pl.lit(0.0).alias("frequenza_di_base"), pl.lit(0.0).alias("sempre_no")
+        )
+    return (
+        accuratezza.join(frequenza, on="variable", how="inner")
+        .with_columns((1.0 - pl.col("frequenza_di_base")).alias("sempre_no"))
+        .filter(pl.col("accuratezza") < pl.col("sempre_no"))
+        .sort("variable", "model")
     )
 
 
@@ -804,6 +866,7 @@ __all__ = [
     "Confronto",
     "DashboardError",
     "Riquadro",
+    "accuratezze_ingannevoli",
     "catalogo_ingressi",
     "confronto_visivo",
     "copertura_mensile",
