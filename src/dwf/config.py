@@ -505,6 +505,14 @@ class TrainingConfig(_Base):
     weight_decay: Annotated[float, Field(ge=0.0)] = 1e-5
     grad_clip_norm: Annotated[float, Field(gt=0.0)] | None = 1.0
     num_workers: Annotated[int, Field(ge=0)] = 0
+    # Disposizione dei tensori in memoria. Misurata su questa CPU con
+    # `tmp/diagnostica/velocita_passo.py`: 2780 -> 2565 ms per passo sulla U-Net e
+    # 545 -> 502 ms sulla rete globale, cioe' un 8% gratuito su entrambe. Il collo di
+    # bottiglia del progetto sono i passi, quindi vale la pena tenerla accesa.
+    # Nella stessa misura bfloat16 e' risultato *dannoso* (2780 -> 5603 ms): questa CPU
+    # non lo supporta nativamente e l'autocast lo emula. Per questo non esiste un
+    # interruttore per la mezza precisione: sarebbe un modo di peggiorare.
+    channels_last: bool = True
     loss_weights: LossWeights = LossWeights()
     spatial_weighting: SpatialWeighting = SpatialWeighting()
 

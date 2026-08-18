@@ -156,6 +156,30 @@ def test_un_checkpoint_senza_architettura_e_letto_come_convoluzionale(
         check_destination_free(tmp_path, "global")
 
 
+def test_channels_last_non_cambia_il_risultato(layout: OutputLayout) -> None:
+    """La disposizione in memoria e' un'ottimizzazione, non un cambio di modello.
+
+    Vale l'8% di tempo per passo misurato su questa CPU: se cambiasse anche i numeri
+    non sarebbe un'ottimizzazione, sarebbe un'altra rete.
+    """
+    torch.manual_seed(0)
+    rete = _rete(layout)
+    ingresso = torch.randn(2, 6, 16, 16)
+
+    with torch.no_grad():
+        atteso = rete(ingresso)
+        ottenuto = rete.to(memory_format=torch.channels_last)(
+            ingresso.contiguous(memory_format=torch.channels_last)
+        )
+
+    assert torch.allclose(atteso, ottenuto, atol=1e-5)
+
+
+def test_la_configurazione_accende_channels_last_per_default(config: Config) -> None:
+    """Misurato piu' veloce su entrambe le architetture, quindi acceso di default."""
+    assert config.training.channels_last is True
+
+
 def test_l_andamento_costante_non_crea_uno_scheduler() -> None:
     import torch
 

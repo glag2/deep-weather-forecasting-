@@ -225,8 +225,14 @@ def run_epoch(
     grad_clip: float | None,
     layout: OutputLayout,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
+    channels_last: bool = False,
 ) -> tuple[float, dict[str, float]]:
-    """Una passata completa; se `optimizer` e' None esegue solo la valutazione."""
+    """Una passata completa; se `optimizer` e' None esegue solo la valutazione.
+
+    Con `channels_last` gli ingressi vengono riordinati come i pesi: se la rete e' in
+    quel formato e il lotto no, PyTorch converte a ogni convoluzione e il vantaggio
+    misurato si perde.
+    """
     allena = optimizer is not None
     network.train(allena)
 
@@ -237,6 +243,10 @@ def run_epoch(
     with torch.set_grad_enabled(allena):
         for batch in loader:
             caratteristiche = batch[KEY_FEATURES]
+            if channels_last:
+                caratteristiche = caratteristiche.contiguous(
+                    memory_format=torch.channels_last
+                )
             bersagli, riferimenti = split_baselines(batch)
             previsione = layout.apply_anchor(network(caratteristiche), riferimenti)
             perdita = criterion(previsione, bersagli)
@@ -323,6 +333,8 @@ def train_fold(
     )
 
     network = build_network(config, output_layout, input_layout.n_channels)
+    if config.training.channels_last:
+        network = network.to(memory_format=torch.channels_last)
     criterion = CompositeLoss(output_layout, config.training.loss_weights)
     optimizer = torch.optim.AdamW(
         network.parameters(),
@@ -362,9 +374,11 @@ def train_fold(
         perdita_train, componenti = run_epoch(
             network, loader_train, criterion, optimizer,
             config.training.grad_clip_norm, output_layout, scheduler,
+            channels_last=config.training.channels_last,
         )
         perdita_val, _ = run_epoch(
-            network, loader_val, criterion, None, None, output_layout
+            network, loader_val, criterion, None, None, output_layout,
+            channels_last=config.training.channels_last,
         )
         durata = time.perf_counter() - avvio
 
