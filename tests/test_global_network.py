@@ -104,9 +104,15 @@ def test_la_configurazione_sceglie_l_architettura(config: Config) -> None:
     layout = OutputLayout.from_targets(config.targets, config.windows.output_slots)
     canali = InputLayout.from_config(config).n_channels
 
-    a_u = build_network(config, layout, canali)
-    variante = config.model.model_copy(update={"architecture": "global"})
-    globale = build_network(config.model_copy(update={"model": variante}), layout, canali)
+    # Entrambe le architetture sono chieste per nome: dedurne una dal default renderebbe
+    # il test dipendente da quale sia il default, che infatti e' cambiato.
+    def con_architettura(nome: str) -> Config:
+        return config.model_copy(
+            update={"model": config.model.model_copy(update={"architecture": nome})}
+        )
+
+    a_u = build_network(con_architettura("unet"), layout, canali)
+    globale = build_network(con_architettura("global"), layout, canali)
 
     assert isinstance(a_u, DeepWeatherNet)
     assert isinstance(globale, GlobalContextNet)

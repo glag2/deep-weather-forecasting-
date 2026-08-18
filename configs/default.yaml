@@ -107,6 +107,12 @@ split:
   val_fraction: 0.15
 
 model:
+  # Scritta qui per esteso perche' un valore che vive solo nel default del codice non si
+  # vede leggendo la configurazione, e questo e' gia' costato una diagnosi sbagliata.
+  # `unet` e `global` pareggiano in bravura sul test (divari sotto il rumore fra semi,
+  # tranne +12 h dove `unet` vince di 0,199 degC) ma `global` costa 545 ms per passo
+  # contro 2780: a pari tempo di calcolo vede cinque volte piu' dati.
+  architecture: global
   base_channels: 48
   depth: 3
   blocks_per_level: 2

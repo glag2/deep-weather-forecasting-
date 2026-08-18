@@ -418,7 +418,15 @@ class ModelConfig(_Base):
     # rete a U, misurato sul modello addestrato, concentra meta' dell'influenza su una
     # previsione entro 130 km, mentre a tre giorni l'informazione che conta parte da
     # 1500-3000 km.
-    architecture: Literal["unet", "global"] = "unet"
+    #
+    # Il confronto e' stato fatto sul test del fold 0 (241 finestre, 245 canali, entrambe
+    # migliori all'epoca 9 su 12). In bravura e' un pareggio: i divari per scadenza stanno
+    # fra 0,02 e 0,07 gradi, sotto il rumore fra semi, con una sola eccezione a +12 h dove
+    # la rete a U vince di 0,199 gradi. In costo non e' un pareggio: 545 ms per passo
+    # contro 2780, cioe' a pari tempo di calcolo `global` vede cinque volte piu' dati, che
+    # e' precisamente il limite dominante oggi (0,94 passate sui dati). Per questo e' il
+    # default: non perche' sia piu' brava, ma perche' a pari tempo puo' diventarlo.
+    architecture: Literal["unet", "global"] = "global"
     # Parametri della sola architettura `global`. Il costo dell'attenzione cresce col
     # quadrato del numero di token, quindi cala con la quarta potenza di `patch`:
     # dimezzare `patch` costa sedici volte tanto.
