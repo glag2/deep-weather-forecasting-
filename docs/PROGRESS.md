@@ -434,9 +434,10 @@ Molti sono miei. Sono elencati perche' il metodo conta quanto il risultato.
 4. **Le mappe non hanno proporzioni geografiche fedeli**: cartopy non e' fra le
    dipendenze e a latitudini diverse la scala nord-sud e est-ovest divergono.
 5. **ecCodes 2.28 nel container** contro il 2.42 raccomandato: ingerire sull'host.
-6. **Il 2024 e' incompleto**: mancano da febbraio a dicembre, in scaricamento. Con quei
-   mesi i fold coprono due cicli annuali invece di uno.
-7. **La chiave CDS va ruotata** se e' mai transitata in un canale non cifrato.
+6. **La chiave CDS va ruotata** se e' mai transitata in un canale non cifrato.
+
+Il punto sull'incompletezza del 2024 e' superato: l'ingestione copre 2862 slot su 2862
+attesi, dal 2024-01-01 al 2026-08-11, senza buchi.
 
 ---
 
@@ -452,3 +453,87 @@ Molti sono miei. Sono elencati perche' il metodo conta quanto il risultato.
    cambiamento non aggiunge nulla alla persistenza.
 4. Correzione di quota esplicita per il passaggio da cella a localita'.
 5. Estendere i fold ai due anni completi.
+
+---
+
+## 14. Il modello non e' mal progettato: e' poco addestrato
+
+Questa sezione e' posteriore alle precedenti e, dove le contraddice, prevale.
+
+### 14.1 Il conto che nessuno aveva fatto
+
+`samples_per_epoch: 512` con `batch_size: 4` sono **128 passi di ottimizzazione per
+epoca**. Venti epoche fanno **2560 passi** per una rete da dieci milioni di parametri.
+
+La copertura dei dati e' ancora piu' netta. Un ritaglio 96x96 e' 9216 punti su 104 661
+del dominio, l'8,8%:
+
+| | punti-griglia |
+|---|---|
+| disponibili in addestramento (961 finestre) | 100 579 221 |
+| visti in venti epoche (10 240 ritagli) | 94 371 840 |
+| rapporto | **0,94** |
+
+In tutto l'addestramento il modello vede l'equivalente di **meno di una passata** sui
+dati. La parola "epoca" nei log e' fuorviante: rivisita 961 finestre dieci volte
+ciascuna guardando ogni volta un decimo del dominio, non passa venti volte sui dati.
+
+Conseguenza per l'interpretazione di tutto quanto precede: ogni confronto fra
+architetture, varianti e caratteristiche finora e' stato condotto in regime di
+sotto-addestramento, dove vince chi parte meglio, non chi arriva piu' lontano. E' la
+stessa ragione per cui l'ancoraggio della pioggia sembrava utile a scala ridotta.
+
+### 14.2 Il campo recettivo efficace e' minuscolo
+
+Derivando un punto di uscita del modello addestrato rispetto a tutto l'ingresso: il
+**50% dell'influenza arriva da meno di 130 km**, il 90% da 2189 km. Un sistema di media
+latitudine viaggia 500-1000 km al giorno, quindi a tre giorni l'informazione utile parte
+da 1500-3000 km. La rete puo' arrivarci in teoria e non ci arriva in pratica.
+
+Attenzione al ritaglio: addestrando su 96x96 il modello non vede **mai** nulla oltre 96
+pixel, cioe' 2664 km. Non puo' imparare una relazione che non gli e' mai stata mostrata.
+Parte del campo recettivo stretto puo' essere causata dal ritaglio, non dalla
+convoluzione. Va separato ingrandendo la finestra vista, non riducendo i dati.
+
+### 14.3 Cosa manca nei dati
+
+Tutte le variabili di ingresso sono **di superficie**. L'unico geopotenziale presente e'
+l'orografia statica. Il tempo alle medie latitudini e' pilotato dal flusso a 500 hPa, e
+i modelli che funzionano (GraphCast, Pangu) usano pochi istanti temporali ma **molti
+livelli verticali**. E' la lacuna piu' probabile fra tutte quelle elencate.
+
+Scelta dei campi, guidata dalle variabili di riferimento di WeatherBench 2 e non
+dall'intuito: **z500** (pilota il flusso), **t850** (avvezione termica, standard per la
+neve), **t500** (stabilita' con t850), **q700** (umidita' disponibile). Esclusi u500 e
+v500: una rete convoluzionale ricava il vento geostrofico dal gradiente di z500, quindi
+sarebbero in gran parte ridondanti a costo pieno.
+
+Verificato su file reali gia' scaricati, non solo in teoria: z500 fra 4886 e 5939 metri
+geopotenziali (gennaio europeo tipico 4900-5800), t500 fra -47 e -2 C, t850 fino a +29 C
+sul bordo sahariano del dominio, q700 fra 0 e 0,010 kg/kg. Anche il caso a rischio, due
+variabili sullo stesso livello nello stesso GRIB, si legge correttamente.
+
+Abilitarli porta i canali da 245 a 341.
+
+### 14.4 Due checkpoint perduti, e la protezione che mancava
+
+La cartella di destinazione di un addestramento **non dipende dall'architettura**:
+`models/fold_00` per tutte. Due corse lanciate insieme finiscono nello stesso posto e la
+seconda sovrascrive la prima appena migliora. E' accaduto: persi i pesi del modello a
+piena scala e quelli del rivale, senza un solo messaggio.
+
+Il campo per separarle, `paths.models_subdir`, esisteva: l'errore e' stato dell'operatore.
+Il difetto del codice era un altro e piu' grave: i metadati **non registravano
+l'architettura**, quindi un checkpoint su disco era indistinguibile da uno prodotto da
+un'altra rete. Ora l'architettura sta nei metadati, il caricamento la verifica e l'avvio
+rifiuta di scrivere sopra un'architettura diversa.
+
+### 14.5 Ordine dei prossimi interventi, per effetto atteso
+
+1. **Piu' passi di ottimizzazione.** E' il vincolo che lega tutto il resto.
+2. **Piu' anni.** 2022 e 2023 in scaricamento portano le finestre da 961 a circa 1750.
+3. **Livelli di pressione.** In scaricamento, ~2,4 GB.
+4. **Finestra vista piu' larga**, per separare il ritaglio dall'architettura.
+5. **Architettura.** Il rivale a contesto globale e' cinque volte piu' piccolo e tre
+   volte piu' veloce sul dominio intero: a parita' di ore di CPU concede piu' passi, che
+   per il punto 1 e' il vantaggio che conta.
