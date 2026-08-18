@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 
+from dwf.data.topography import descrittori, nomi_descrittori
 from dwf.slots import time_encoding
 from dwf.tables import CHANNELS, NORM_STATS, cast_to_schema
 from dwf.variables import spec_by_short_name
@@ -38,8 +39,12 @@ GROUP_STATE = "state"
 GROUP_TENDENCY = "tendency"
 GROUP_WIND = "wind_speed"
 GROUP_STATIC = "static"
+GROUP_TOPOGRAPHY = "topography"
 GROUP_LATITUDE = "latitude"
 GROUP_TIME = "time"
+
+# Variabile da cui si ricavano i descrittori topografici: il geopotenziale di superficie.
+ELEVATION_VARIABLE = "z"
 
 # Nomi dei canali temporali, nell'ordine restituito da `slots.time_encoding`.
 TIME_CHANNEL_NAMES = ("year_sin", "year_cos", "day_sin", "day_cos")
@@ -81,6 +86,7 @@ class InputLayout:
     input_slots: int
     tendency_lags: tuple[int, ...]
     include_wind_speed: bool
+    topographic_radii: tuple[int, ...] = ()
 
     @property
     def n_channels(self) -> int:
@@ -165,6 +171,20 @@ class InputLayout:
             for variabile in statiche:
                 aggiungi(variabile, GROUP_STATIC, variabile, -1, True)
 
+        # 4b. Descrittori topografici di vicinato. La convoluzione locale vede pochi punti
+        #     e il ramo globale lavora su token grossi: fra i due, la forma del terreno
+        #     attorno al singolo punto non e' rappresentata da nulla. Sono campi statici
+        #     ricavati dalla quota, quindi non costano ne' download ne' ingestione.
+        raggi = tuple(config.features.topographic_radii)
+        if raggi:
+            if ELEVATION_VARIABLE not in statiche:
+                raise FeatureError(
+                    f"I descrittori topografici richiedono {ELEVATION_VARIABLE!r} fra le "
+                    f"variabili statiche, presenti: {statiche}"
+                )
+            for nome in nomi_descrittori(raggi):
+                aggiungi(nome, GROUP_TOPOGRAPHY, ELEVATION_VARIABLE, -1, False)
+
         # 5. Latitudine: su un dominio di 65 gradi il comportamento fisico cambia
         #    molto con la latitudine, che una convoluzione invariante per traslazione
         #    non puo' dedurre.
@@ -184,6 +204,7 @@ class InputLayout:
             input_slots=input_slots,
             tendency_lags=lags,
             include_wind_speed=config.features.include_wind_speed,
+            topographic_radii=raggi,
         )
 
     def describe(self) -> list[dict[str, object]]:
@@ -537,6 +558,7 @@ def build_input_tensor(
 
     canali = np.empty((layout.n_channels, altezza, larghezza), dtype=np.float32)
     tempo: np.ndarray | None = None
+    topografia: dict[str, np.ndarray] | None = None
 
     for canale in layout.channels:
         if canale.group in (GROUP_STATE, GROUP_WIND):
@@ -553,6 +575,19 @@ def build_input_tensor(
             canali[canale.index] = stats.normalize(
                 canale.source_variable, static_fields[canale.source_variable]
             )
+        elif canale.group == GROUP_TOPOGRAPHY:
+            if static_fields is None or ELEVATION_VARIABLE not in static_fields:
+                raise FeatureError(
+                    f"I descrittori topografici richiedono il campo statico "
+                    f"{ELEVATION_VARIABLE!r}"
+                )
+            if topografia is None:
+                # Calcolati una volta per finestra e non una volta per canale: sono
+                # sette descrittori che condividono le stesse finestre scorrevoli.
+                topografia = descrittori(
+                    static_fields[ELEVATION_VARIABLE], layout.topographic_radii
+                )
+            canali[canale.index] = topografia[canale.name]
         elif canale.group == GROUP_LATITUDE:
             if latitudes is None:
                 raise FeatureError("Il layout richiede le latitudini della griglia")
@@ -572,11 +607,13 @@ def build_input_tensor(
 
 
 __all__ = [
+    "ELEVATION_VARIABLE",
     "GROUP_LATITUDE",
     "GROUP_STATE",
     "GROUP_STATIC",
     "GROUP_TENDENCY",
     "GROUP_TIME",
+    "GROUP_TOPOGRAPHY",
     "GROUP_WIND",
     "WIND_SPEED",
     "ChannelSpec",

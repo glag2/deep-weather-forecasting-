@@ -19,6 +19,7 @@ from dwf.data.features import (
     GROUP_STATIC,
     GROUP_TENDENCY,
     GROUP_TIME,
+    GROUP_TOPOGRAPHY,
     GROUP_WIND,
     WIND_SPEED,
     FeatureError,
@@ -159,6 +160,72 @@ def test_il_vento_richiede_le_componenti(config: Config) -> None:
     dati["targets"] = [{"name": "t2m", "head": "gaussian"}]
     with pytest.raises(FeatureError, match="include_wind_speed"):
         InputLayout.from_config(Config.model_validate(dati))
+
+
+class TestDescrittoriTopografici:
+    """Sono spenti per default: accendendoli devono comparire in coda e valere qualcosa."""
+
+    @staticmethod
+    def _acceso(config: Config, raggi: list[int]) -> Config:
+        dati = config.model_dump()
+        dati["features"]["topographic_radii"] = raggi
+        return Config.model_validate(dati)
+
+    def test_spenti_per_default(self, layout: InputLayout) -> None:
+        assert layout.topographic_radii == ()
+        assert layout.indices_of_group(GROUP_TOPOGRAPHY) == []
+
+    def test_si_aggiungono_in_coda_senza_spostare_gli_altri(self, config: Config) -> None:
+        base = InputLayout.from_config(config)
+        esteso = InputLayout.from_config(self._acceso(config, [1, 3]))
+        # Due pendenze piu' tre descrittori per ciascun raggio.
+        assert esteso.n_channels == base.n_channels + 2 + 3 * 2
+        # I descrittori stanno accanto agli altri campi invarianti, non in coda: cio' che
+        # deve restare invariato e' l'ordine relativo di tutti i canali preesistenti.
+        senza_topografia = [
+            canale.name for canale in esteso.channels if canale.group != GROUP_TOPOGRAPHY
+        ]
+        assert senza_topografia == [canale.name for canale in base.channels]
+
+    def test_senza_la_quota_fra_le_statiche_e_un_errore(self, config: Config) -> None:
+        dati = self._acceso(config, [2]).model_dump()
+        dati["variables"]["static"] = ["land_sea_mask"]
+        with pytest.raises(FeatureError, match="descrittori topografici"):
+            InputLayout.from_config(Config.model_validate(dati))
+
+    def test_i_canali_finiscono_nel_tensore(self, config: Config) -> None:
+        esteso = InputLayout.from_config(self._acceso(config, [2]))
+        statici = campi_statici(esteso, altezza=9, larghezza=9)
+        # Una cima isolata: senza descrittori nessun canale la distingue dal piano.
+        statici["z"] = np.zeros((9, 9), dtype=np.float32)
+        statici["z"][4, 4] = 1000.0 * 9.80665
+        tensore = build_input_tensor(
+            esteso,
+            finestra_finta(esteso, altezza=9, larghezza=9),
+            stats_neutre(esteso),
+            static_fields=statici,
+            latitudes=np.linspace(75.0, 10.0, 9),
+            reference_time=datetime(2025, 3, 1, 12),
+            slot_hours=config.time.slot_hours,
+        )
+        indici = esteso.indices_of_group(GROUP_TOPOGRAPHY)
+        assert len(indici) == 5
+        posizione = esteso.index_of("topo_tpi_r2")
+        assert int(np.argmax(tensore[posizione])) == 4 * 9 + 4
+        assert np.isfinite(tensore).all()
+
+    def test_senza_il_campo_di_quota_il_tensore_non_si_costruisce(self, config: Config) -> None:
+        esteso = InputLayout.from_config(self._acceso(config, [2]))
+        with pytest.raises(FeatureError, match="statico"):
+            build_input_tensor(
+                esteso,
+                finestra_finta(esteso),
+                stats_neutre(esteso),
+                static_fields={},
+                latitudes=np.linspace(75.0, 10.0, 4),
+                reference_time=datetime(2025, 3, 1, 12),
+                slot_hours=config.time.slot_hours,
+            )
 
 
 def test_indice_di_un_canale_inesistente(layout: InputLayout) -> None:

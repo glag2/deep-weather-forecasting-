@@ -329,11 +329,23 @@ class FeaturesConfig(_Base):
     include_time_encoding: bool = True
     include_static: bool = True
     include_latitude_encoding: bool = True
+    # Raggi, in punti di griglia, dei descrittori topografici di vicinato ricavati dalla
+    # quota. Vuoto significa disattivati: l'effetto va misurato prima di adottarlo.
+    topographic_radii: list[Annotated[int, Field(ge=1)]] = []
 
     @model_validator(mode="after")
     def _check_lags(self) -> Self:
         if len(set(self.tendency_lags)) != len(self.tendency_lags):
             raise ValueError("features.tendency_lags contiene duplicati")
+        if len(set(self.topographic_radii)) != len(self.topographic_radii):
+            raise ValueError("features.topographic_radii contiene duplicati")
+        if self.topographic_radii != sorted(self.topographic_radii):
+            raise ValueError("features.topographic_radii deve essere crescente")
+        if self.topographic_radii and not self.include_static:
+            raise ValueError(
+                "features.topographic_radii richiede include_static: i descrittori si "
+                "ricavano dal campo di quota, che senza i campi statici non viene letto"
+            )
         return self
 
 
