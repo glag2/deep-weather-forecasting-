@@ -123,7 +123,7 @@ def configura(base: Config, prova: Prova, args: argparse.Namespace) -> Config:
     )
     suffisso = "" if args.seed is None else f"_seed{args.seed}"
     percorsi = base.paths.model_copy(
-        update={"artifacts_subdir": f"bench/{prova.nome}{suffisso}"}
+        update={"models_subdir": f"bench/{prova.nome}{suffisso}"}
     )
     return base.model_copy(
         update={"model": modello, "training": allenamento, "paths": percorsi}
