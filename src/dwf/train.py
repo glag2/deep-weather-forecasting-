@@ -9,6 +9,7 @@ prevedere, ma la memoria dei dati gia' visti.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import time
@@ -35,7 +36,7 @@ from dwf.models.global_network import GlobalContextNet, GlobalNetworkSpec
 from dwf.models.heads import OutputLayout
 from dwf.models.losses import CompositeLoss
 from dwf.models.network import DeepWeatherNet, NetworkSpec
-from dwf.optim import build_optimizer
+from dwf.optim import MediaEsponenziale, build_optimizer
 from dwf.persistence import METADATA_NAME, PersistenceError, load_model, save_model
 from dwf.tables import NORM_STATS, write_table
 
@@ -230,6 +231,7 @@ def run_epoch(
     layout: OutputLayout,
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
     channels_last: bool = False,
+    media: MediaEsponenziale | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Una passata completa; se `optimizer` e' None esegue solo la valutazione.
 
@@ -264,6 +266,10 @@ def run_epoch(
                 optimizer.step()
                 if scheduler is not None:
                     scheduler.step()
+                # Dopo il passo, non prima: la media deve inseguire le posizioni
+                # effettivamente raggiunte.
+                if media is not None:
+                    media.update(network)
 
             somma += float(perdita.total.detach())
             conteggio += 1
@@ -374,17 +380,37 @@ def train_fold(
             f"{network.n_parameters:,} parametri"
         )
 
+    media = (
+        MediaEsponenziale(network, config.training.ema_decay)
+        if config.training.ema_decay > 0.0
+        else None
+    )
+
     for epoca in range(n_epoche):
         avvio = time.perf_counter()
         perdita_train, componenti = run_epoch(
             network, loader_train, criterion, optimizer,
             config.training.grad_clip_norm, output_layout, scheduler,
             channels_last=config.training.channels_last,
+            media=media,
         )
         perdita_val, _ = run_epoch(
             network, loader_val, criterion, None, None, output_layout,
             channels_last=config.training.channels_last,
         )
+        # I pesi medi vengono giudicati sulla stessa validazione dei pesi veri, e vince
+        # chi ha il numero piu' basso. Cosi' la media non puo' peggiorare il risultato:
+        # nel caso peggiore non viene scelta mai.
+        pesi_scelti = "grezzi"
+        if media is not None:
+            with media.applicata(network):
+                perdita_media, _ = run_epoch(
+                    network, loader_val, criterion, None, None, output_layout,
+                    channels_last=config.training.channels_last,
+                )
+            if perdita_media < perdita_val:
+                perdita_val = perdita_media
+                pesi_scelti = "media_esponenziale"
         durata = time.perf_counter() - avvio
 
         cronologia.append(
@@ -413,18 +439,33 @@ def train_fold(
         if perdita_val < migliore:
             migliore = perdita_val
             epoca_migliore = epoca
+            # Si salvano i pesi che hanno prodotto `perdita_val`, non quelli correnti:
+            # salvare gli altri renderebbe il checkpoint diverso dal numero con cui e'
+            # stato scelto, che e' il modo piu' silenzioso di mentire a se stessi.
+            with (
+                media.applicata(network)
+                if media is not None and pesi_scelti == "media_esponenziale"
+                else contextlib.nullcontext()
+            ):
+                # `clone()` non e' ridondante: su CPU `.cpu()` non copia e `.numpy()`
+                # restituisce una vista sulla memoria del tensore, quindi senza la copia
+                # le matrici uscirebbero dal contesto puntando ai buffer della rete e il
+                # ripristino dei pesi veri le sovrascriverebbe prima della scrittura.
+                # Misurato: il checkpoint dichiarava i pesi medi e conteneva i grezzi.
+                pesi = {
+                    nome: valori.detach().clone().cpu().numpy()
+                    for nome, valori in network.state_dict().items()
+                }
             save_model(
                 checkpoint,
-                {
-                    nome: valori.detach().cpu().numpy()
-                    for nome, valori in network.state_dict().items()
-                },
+                pesi,
                 {
                     "in_channels": input_layout.n_channels,
                     "architecture": config.model.architecture,
                     "fold": fold,
                     "epoch": epoca,
                     "val_loss": perdita_val,
+                    "weights": pesi_scelti,
                     "channels": input_layout.describe(),
                     "outputs": output_layout.describe(),
                     "data": impronta_dati,
@@ -433,9 +474,10 @@ def train_fold(
 
         if verbose:
             marcatore = " *" if epoca == epoca_migliore else ""
+            origine = " (media)" if pesi_scelti == "media_esponenziale" else ""
             print(
                 f"  epoca {epoca:3d}  train {perdita_train:8.4f}  "
-                f"val {perdita_val:8.4f}  {durata:6.1f} s{marcatore}"
+                f"val {perdita_val:8.4f}{origine}  {durata:6.1f} s{marcatore}"
             )
 
     (destinazione / HISTORY_NAME).write_text(

@@ -28,8 +28,9 @@ default della configurazione resta AdamW: si adotta solo se vince sul banco.
 
 from __future__ import annotations
 
+import contextlib
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 import torch
@@ -48,6 +49,7 @@ __all__ = [
     "COEFFICIENTI_NEWTON_SCHULZ",
     "PASSI_NEWTON_SCHULZ",
     "CMuon",
+    "MediaEsponenziale",
     "OptimError",
     "build_optimizer",
     "ortogonalizza",
@@ -57,6 +59,79 @@ __all__ = [
 
 class OptimError(RuntimeError):
     """Configurazione dell'ottimizzatore incoerente con i parametri della rete."""
+
+
+class MediaEsponenziale:
+    """Media esponenziale dei pesi, mantenuta a fianco della rete che si addestra.
+
+    A cosa serve qui. L'ultima epoca non e' necessariamente la migliore posizione dei
+    pesi: con pochi passi e lotti piccoli l'ottimizzatore oscilla attorno al minimo, e la
+    media delle posizioni recenti cade piu' vicino al centro della conca di quanto ci cada
+    l'ultimo passo. E' un guadagno che non costa calcolo aggiuntivo nel passo, solo una
+    copia dei pesi in memoria.
+
+    Rampa iniziale. Con un coefficiente fisso di 0,999 e circa 250 passi per epoca la
+    media resterebbe ancorata all'inizializzazione per gran parte della corsa, cioe'
+    sarebbe peggiore dei pesi veri senza che se ne capisca il motivo. Il coefficiente
+    parte quindi da valori bassi e cresce, come si fa con la correzione di bias di Adam:
+    al passo n non si usa mai piu' di (1 + n) / (10 + n).
+
+    Cosa non fa. Non decide nulla da sola: chi la usa deve valutare *entrambe* le copie
+    sulla validazione e conservare quella che vince. E' l'unico modo di aggiungerla senza
+    scommettere, dato che il suo effetto in questo regime non e' misurato.
+    """
+
+    def __init__(self, network: nn.Module, decay: float) -> None:
+        if not 0.0 < decay < 1.0:
+            raise OptimError(f"Il coefficiente della media deve stare in (0, 1): {decay}")
+        self.decay = decay
+        self.passi = 0
+        # `detach().clone()` e non un riferimento: la media deve essere una posizione
+        # distinta, altrimenti seguirebbe i pesi invece di mediarli.
+        self.ombra: dict[str, Tensor] = {
+            nome: valore.detach().clone().float()
+            for nome, valore in network.state_dict().items()
+            if valore.is_floating_point()
+        }
+
+    def coefficiente(self) -> float:
+        return min(self.decay, (1.0 + self.passi) / (10.0 + self.passi))
+
+    @torch.no_grad()
+    def update(self, network: nn.Module) -> None:
+        self.passi += 1
+        coefficiente = self.coefficiente()
+        stato = network.state_dict()
+        for nome, media in self.ombra.items():
+            media.mul_(coefficiente).add_(stato[nome].detach().float(), alpha=1.0 - coefficiente)
+
+    def state_dict(self) -> dict[str, Tensor]:
+        """I pesi medi, nella forma attesa da `load_state_dict` della rete."""
+        return {nome: valore.clone() for nome, valore in self.ombra.items()}
+
+    @contextlib.contextmanager
+    def applicata(self, network: nn.Module) -> Iterator[None]:
+        """Installa temporaneamente i pesi medi, per valutarli, e poi rimette i veri.
+
+        Il ripristino sta in `finally` perche' un'eccezione durante la validazione
+        lascerebbe altrimenti la rete con i pesi medi e l'addestramento proseguirebbe da
+        una posizione diversa da quella raggiunta, senza alcun segnale.
+        """
+        originali = {
+            nome: valore.detach().clone() for nome, valore in network.state_dict().items()
+        }
+        try:
+            network.load_state_dict(
+                {
+                    nome: self.ombra[nome].to(valore.dtype)
+                    if nome in self.ombra
+                    else valore
+                    for nome, valore in originali.items()
+                }
+            )
+            yield
+        finally:
+            network.load_state_dict(originali)
 
 
 def ortogonalizza(matrice: Tensor, passi: int = PASSI_NEWTON_SCHULZ) -> Tensor:

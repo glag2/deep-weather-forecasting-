@@ -15,21 +15,22 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 
 from dwf.config import Config
 from dwf.data.features import InputLayout
 from dwf.models.heads import OutputLayout
-from dwf.models.network import DeepWeatherNet, NetworkSpec
+from dwf.train import build_network
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def time_training_step(
-    network: DeepWeatherNet, batch_size: int, crop: int, repeats: int
+    network: nn.Module, batch_size: int, height: int, width: int, repeats: int
 ) -> float:
     """Secondi medi per un passo completo forward + backward + aggiornamento."""
     optimizer = torch.optim.AdamW(network.parameters(), lr=1e-4)
-    features = torch.randn(batch_size, network.spec.in_channels, crop, crop)
+    features = torch.randn(batch_size, network.spec.in_channels, height, width)
     network.train()
 
     # Un passo a vuoto: la prima chiamata paga allocazioni e scelta dei kernel.
@@ -45,7 +46,7 @@ def time_training_step(
     return (time.perf_counter() - started) / repeats
 
 
-def time_full_domain_inference(network: DeepWeatherNet, height: int, width: int) -> float:
+def time_full_domain_inference(network: nn.Module, height: int, width: int) -> float:
     """Secondi per una previsione sull'intero dominio."""
     features = torch.randn(1, network.spec.in_channels, height, width)
     network.eval()
@@ -72,32 +73,29 @@ def main() -> None:
     config = Config.load(args.config)
     layout = OutputLayout.from_targets(config.targets, config.windows.output_slots)
     in_channels = InputLayout.from_config(config).n_channels
-    crop = config.training.crop_size or 96
-
-    network = DeepWeatherNet(
-        NetworkSpec(
-            in_channels=in_channels,
-            base_channels=config.model.base_channels,
-            depth=config.model.depth,
-            blocks_per_level=config.model.blocks_per_level,
-            dropout=config.model.dropout,
-        ),
-        layout,
-    )
+    network = build_network(config, layout, in_channels)
 
     height, width = config.region.n_lat, config.region.n_lon
+    # Con `crop_size` nullo il training vede il dominio intero: misurare comunque un
+    # 96 x 96 di comodo darebbe un costo per passo inferiore di un ordine di grandezza,
+    # cioe' un piano notturno sbagliato.
+    if config.training.crop_size is None:
+        step_height, step_width = height, width
+    else:
+        step_height = step_width = config.training.crop_size
     n_train_samples = int(2190 * config.split.train_fraction)
 
     print(f"thread torch          : {torch.get_num_threads()}")
     print(f"canali di input       : {in_channels}")
     print(f"canali di uscita      : {layout.total_channels}")
     print(f"parametri             : {network.n_parameters:,}")
+    print(f"architettura          : {config.model.architecture}")
     print(f"dominio               : {height} x {width}")
-    print(f"crop di training      : {crop} x {crop}")
+    print(f"finestra di training  : {step_height} x {step_width}")
     print()
 
     step_seconds = time_training_step(
-        network, config.training.batch_size, crop, args.repeats
+        network, config.training.batch_size, step_height, step_width, args.repeats
     )
     per_sample = step_seconds / config.training.batch_size
     epoch_seconds = per_sample * config.training.samples_per_epoch

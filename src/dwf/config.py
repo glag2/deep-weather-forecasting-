@@ -523,6 +523,11 @@ class TrainingConfig(_Base):
     # risultati del paper sono a 675M parametri e lotto 1024: qui resta spento finche' non
     # vince sul banco.
     optimizer: Literal["adamw", "cmuon"] = "adamw"
+    # Media esponenziale dei pesi. 0 la spegne. Non e' una scommessa: a ogni epoca la
+    # validazione misura sia i pesi veri sia quelli medi e si conserva il migliore, con il
+    # nome di chi ha vinto scritto nei metadati del checkpoint. Costa una passata di
+    # validazione in piu' per epoca, cioe' pochi punti percentuali del tempo di un'epoca.
+    ema_decay: Annotated[float, Field(ge=0.0, lt=1.0)] = 0.0
     lr_schedule: Literal["constant", "cosine"] = "constant"
     # Frazione dei passi totali spesa a salire dal passo nullo a quello pieno.
     warmup_fraction: Annotated[float, Field(ge=0.0, lt=0.5)] = 0.05
