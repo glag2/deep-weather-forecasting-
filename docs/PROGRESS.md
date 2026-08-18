@@ -537,3 +537,38 @@ rifiuta di scrivere sopra un'architettura diversa.
 5. **Architettura.** Il rivale a contesto globale e' cinque volte piu' piccolo e tre
    volte piu' veloce sul dominio intero: a parita' di ore di CPU concede piu' passi, che
    per il punto 1 e' il vantaggio che conta.
+
+### 14.6 Quanto vale il modello contro il non fare nulla
+
+La media su nove scadenze nasconde il numero che conta. Errore quadratico medio della
+temperatura in gradi, split di test, 241 finestre, confronto con la persistenza diurna
+("domani come ieri alla stessa ora"):
+
+| scadenza | ore avanti | modello | ieri stessa ora | guadagno |
+|---|---|---|---|---|
+| 0 | +12 | 1,866 | 2,429 | +23,2 % |
+| 1 | +18 | 2,124 | 2,409 | +11,8 % |
+| 2 | +24 | 2,270 | 2,404 | **+5,5 %** |
+| 3 | +36 | 2,785 | 3,208 | +13,2 % |
+| 4 | +42 | 2,924 | 3,232 | +9,5 % |
+| 5 | +48 | 2,992 | 3,237 | +7,6 % |
+| 6 | +60 | 3,278 | 3,711 | +11,7 % |
+| 7 | +66 | 3,335 | 3,717 | +10,3 % |
+| 8 | +72 | 3,322 | 3,685 | +9,8 % |
+
+Il guadagno e' minimo alle scadenze multiple di 24 ore, dove la persistenza diurna
+coincide con la persistenza semplice ed e' quindi al suo massimo di forza. A ventiquattro
+ore il modello batte del **5,5%** l'ipotesi di non fare nulla.
+
+Questo, e non il valore assoluto di 2,27 gradi, e' il difetto: 2,40 gradi si ottengono
+senza alcun modello. Cio' che il modello ha imparato e' il ciclo giornaliero, che gli era
+gia' dato dall'ancoraggio, piu' un lisciamento locale. La dinamica, cioe' il fatto che
+domani arrivi aria diversa da altrove, non c'e'.
+
+Le tre misure di questa giornata convergono: campo recettivo efficace di 130 km, nessuna
+variabile in quota, 2,7 visite per finestra in tutto l'addestramento. Per imparare la
+dinamica mancano contemporaneamente la portata spaziale, l'informazione sul flusso e il
+tempo di calcolo. Nessuna delle tre da sola spiegherebbe il risultato.
+
+Soglia dichiarata dall'utente: sotto 2 gradi a ventiquattro ore. Serve portare il
+guadagno sulla persistenza dal 5,5% al 17%, cioe' triplicarlo.
