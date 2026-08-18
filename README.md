@@ -196,18 +196,36 @@ Modello valutato sul blocco di **test** del fold 0, mai usato ne' per addestrare
 per scegliere le soglie. Il riferimento e' la **persistenza diurna** (ripetere ieri alla
 stessa ora), che su questo dominio e' un avversario molto forte.
 
-| Grandezza | Metrica | Modello | Persistenza diurna |
-|---|---|---:|---:|
-| Temperatura | RMSE (degC) | _da valutazione_ | _da valutazione_ |
-| Pioggia si/no | Accuratezza | _da valutazione_ | _da valutazione_ |
-| Pioggia si/no | F1 | _da valutazione_ | _da valutazione_ |
-| Neve si/no | F1 | _da valutazione_ | _da valutazione_ |
-| Pioggia e neve | F1 macro | _da valutazione_ | _da valutazione_ |
+| Grandezza | Metrica | Modello | Persistenza diurna | Persistenza ingenua |
+|---|---|---:|---:|---:|
+| Temperatura | RMSE (degC) | **2.92** | 3.16 | 4.73 |
+| Pioggia si/no | F1 | **0.635** | 0.609 | 0.624 |
+| Pioggia si/no | Accuratezza | 0.709 | 0.726 | **0.739** |
+| Neve si/no | F1 | 0.493 | 0.561 | **0.590** |
+| Neve si/no | Accuratezza | 0.847 | 0.919 | **0.925** |
+| Pioggia e neve | F1 macro | 0.564 | 0.585 | **0.607** |
 
-I valori si ottengono con `scripts/evaluate_model.py --fold 0 --split test`, che scrive
-`metrics.parquet`. La tabella e' volutamente vuota finche' non e' stata eseguita una
-valutazione sul modello corrente: riportare numeri di una versione precedente sarebbe
-peggio che non riportarne.
+241 finestre di test, 9 scadenze ciascuna, dominio intero. Ottenuti con
+`scripts/evaluate_model.py --fold 0 --split test`, che scrive `metrics.parquet`.
+
+**Come leggerla.** Sulla temperatura il modello batte la persistenza diurna a **tutte e
+nove le scadenze**, e il vantaggio non e' concentrato sulle prime: 2.02 contro 2.43 degC
+a sei ore, 3.40 contro 3.68 a tre giorni.
+
+Sulla neve **perde**, e conviene dire perche' invece di nasconderlo. Il modello prevede
+neve troppo spesso: recupera l'82 % dei casi contro il 60 % della persistenza, ma solo
+il 35 % delle sue segnalazioni e' corretto contro il 55 %. La soglia di decisione e'
+scelta sulla validazione, dove rende F1 0.568; sul test scende a 0.493. Cambiarla
+guardando il test sposterebbe il compromesso, ma sarebbe barare.
+
+**L'accuratezza sulla neve non va letta come un risultato.** La neve compare nel 9 % dei
+casi, quindi rispondere sempre "no" darebbe 90.9 %: entrambe le persistenze, al 92.5 %,
+superano di poco quella soglia banale. E' la ragione per cui la tabella riporta anche
+F1, che una risposta costante non puo' gonfiare.
+
+Sulla **qualita' della probabilita'**, che e' cio' che serve per decidere, il modello
+vince ovunque, neve compresa: punteggio di Brier 0.181 contro 0.274 sulla pioggia e
+0.066 contro 0.081 sulla neve, con errore di calibrazione 0.053 contro 0.274.
 
 **F1 macro** e' la media dei due F1 binari (pioggia e neve). Un F1 unico su tutto il
 modello non avrebbe senso: la temperatura e' continua e non ha una nozione di
