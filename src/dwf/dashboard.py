@@ -173,16 +173,24 @@ def struttura_fold(config: Config) -> pl.DataFrame | None:
     tabella = _leggi(FOLDS, config.tables_dir)
     if tabella is None or not tabella.height:
         return None
-    return (
+    struttura = (
         tabella.group_by("fold", "split")
         .agg(
             pl.col("slot_index").min().alias("primo_slot"),
             pl.col("slot_index").max().alias("ultimo_slot"),
             pl.len().alias("slot"),
-            pl.col("is_sample_start").sum().alias("inizi_ammessi"),
         )
         .sort("fold", "split")
     )
+    # La colonna `is_sample_start` del file vale per la finestra in uso quando i fold
+    # sono stati scritti. Mostrarla accanto a una configurazione con finestra diversa
+    # darebbe un conteggio che l'addestramento non usa: si ricalcola sulla finestra
+    # corrente, la stessa che vede `sample_starts`.
+    finestra = config.windows.input_slots + config.windows.output_slots
+    ammessi = [
+        max(0, int(riga["slot"]) - finestra + 1) for riga in struttura.iter_rows(named=True)
+    ]
+    return struttura.with_columns(pl.Series("inizi_ammessi", ammessi, dtype=pl.UInt32))
 
 
 # --------------------------------------------------------------------------- #

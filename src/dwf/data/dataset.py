@@ -314,33 +314,52 @@ def usable_mask(config: Config) -> np.ndarray:
     return catalogo.get_column("usable").to_numpy().astype(bool)
 
 
-def sample_starts(config: Config, fold: int, split: str) -> list[int]:
-    """Slot iniziali ammessi per un fold e uno split, letti da `folds.parquet`.
+def split_bounds(config: Config, fold: int, split: str) -> tuple[int, int] | None:
+    """Estremi del blocco, come intervallo semiaperto ``[inizio, fine)``.
 
-    La tabella dei fold marca gli inizi validi con la finestra in vigore **quando e'
-    stata costruita**, e quel valore resta congelato nel file. Chi allunga poi la
-    finestra leggerebbe inizi validati per una finestra piu' corta, e i campioni in
-    coda attingerebbero a slot mai ingeriti: non un errore visibile, ma NaN che
-    attraversano in silenzio normalizzazione e perdita fino a un addestramento che non
-    salva nulla senza dire perche'. Il controllo si rifa' quindi sulla finestra corrente.
+    I confini appartengono alla partizione temporale e non dipendono dalla finestra:
+    sono l'unico dato di `folds.parquet` che resta valido anche cambiando
+    `input_slots`.
     """
     tabella = read_table(FOLDS, config.tables_dir)
-    selezione = tabella.filter(
-        (pl.col("fold") == fold)
-        & (pl.col("split") == split)
-        & pl.col("is_sample_start")
-    ).sort("slot_index")
-    candidati = selezione.get_column("slot_index").to_list()
-    if not candidati:
+    selezione = tabella.filter((pl.col("fold") == fold) & (pl.col("split") == split))
+    if not selezione.height:
+        return None
+    estremi = selezione.select(
+        pl.col("slot_index").min().alias("min"), pl.col("slot_index").max().alias("max")
+    ).row(0)
+    return int(estremi[0]), int(estremi[1]) + 1
+
+
+def sample_starts(config: Config, fold: int, split: str) -> list[int]:
+    """Slot iniziali ammessi per un fold e uno split, alla finestra **corrente**.
+
+    Gli inizi non vengono letti da `folds.parquet` ma rienumerati dai confini del
+    blocco. La colonna `is_sample_start` e' calcolata una volta sola, con la finestra
+    in vigore al momento dell'ingestione, e resta congelata: riusarla con una finestra
+    diversa produce due errori opposti e silenziosi.
+
+    Con una finestra piu' **corta** si perdono inizi che il blocco consentirebbe,
+    perche' nessuno li ha mai marcati: l'impostazione viene misurata con meno dati di
+    quelli che le spettano. Con una finestra piu' **lunga** si tengono inizi la cui
+    coda esce dal blocco e finisce nell'intervallo cuscinetto, o oltre: quei campioni
+    non dovrebbero esistere, e avvicinano i bersagli di addestramento al blocco
+    successivo proprio dove il cuscinetto serviva a separarli.
+
+    Rienumerare costa una scansione e rende il conteggio corretto per costruzione.
+    """
+    confini = split_bounds(config, fold, split)
+    if confini is None:
         return []
+    inizio_blocco, fine_blocco = confini
 
     utilizzabili = usable_mask(config)
     finestra = config.windows.input_slots + config.windows.output_slots
+    ultimo_inizio = min(fine_blocco, utilizzabili.size) - finestra
     return [
         inizio
-        for inizio in candidati
-        if inizio + finestra <= utilizzabili.size
-        and bool(utilizzabili[inizio : inizio + finestra].all())
+        for inizio in range(inizio_blocco, ultimo_inizio + 1)
+        if bool(utilizzabili[inizio : inizio + finestra].all())
     ]
 
 

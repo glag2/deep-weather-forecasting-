@@ -422,6 +422,97 @@ def test_nessun_inizio_ammesso_se_la_finestra_supera_i_dati(config: Config) -> N
     assert sample_starts(enorme, 0, "train") == []
 
 
+def _scrivi_blocchi(config: Config, blocchi: dict[str, tuple[int, int]], n: int) -> None:
+    """Catalogo tutto utilizzabile e tabella dei fold con blocchi separati.
+
+    ``is_sample_start`` viene scritto **falso ovunque** di proposito: gli inizi non
+    devono piu' dipendere da quella colonna, e un test che la lasciasse vera non
+    saprebbe distinguere il comportamento nuovo da quello vecchio.
+    """
+    import polars as pl
+
+    from dwf.tables import FOLDS, cast_to_schema, write_table
+
+    _scrivi_catalogo(config, [True] * n)
+    righe: list[dict] = []
+    for nome, (inizio, fine) in blocchi.items():
+        righe += [
+            {"fold": 0, "split": nome, "slot_index": i, "is_sample_start": False}
+            for i in range(inizio, fine)
+        ]
+    write_table(cast_to_schema(pl.DataFrame(righe), FOLDS), FOLDS, config.tables_dir)
+
+
+def _con_finestra(config: Config, ingresso: int, uscita: int) -> Config:
+    return config.model_copy(
+        update={
+            "windows": config.windows.model_copy(
+                update={"input_slots": ingresso, "output_slots": uscita}
+            )
+        }
+    )
+
+
+def test_una_finestra_corta_ottiene_piu_inizi_di_una_lunga(config: Config) -> None:
+    """Il difetto misurato sul progetto vero: tutte le lunghezze davano 961 inizi.
+
+    La colonna congelata elencava gli inizi di una sola finestra, quindi accorciarla
+    non restituiva gli inizi guadagnati e allungarla non toglieva quelli persi.
+    """
+    from dwf.data.dataset import sample_starts
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_blocchi(config, {"train": (0, 100)}, n=100)
+
+    corta = sample_starts(_con_finestra(config, 6, 3), 0, "train")
+    lunga = sample_starts(_con_finestra(config, 30, 3), 0, "train")
+
+    assert len(corta) == 100 - 9 + 1
+    assert len(lunga) == 100 - 33 + 1
+    assert len(corta) > len(lunga)
+
+
+def test_nessuna_finestra_esce_dal_proprio_blocco(config: Config) -> None:
+    """Con la finestra piu' lunga i bersagli finivano nel cuscinetto fra i blocchi.
+
+    Il cuscinetto esiste per separare addestramento e validazione: campioni che lo
+    invadono avvicinano i bersagli al blocco successivo proprio dove servirebbe
+    distanza.
+    """
+    from dwf.data.dataset import sample_starts
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_blocchi(config, {"train": (0, 60), "val": (70, 100)}, n=100)
+
+    for ingresso in (6, 15, 30):
+        finestra = ingresso + 3
+        inizi = sample_starts(_con_finestra(config, ingresso, 3), 0, "train")
+        assert inizi, f"nessun inizio con ingresso {ingresso}"
+        assert max(inizi) + finestra <= 60, (
+            f"con ingresso {ingresso} la finestra arriva a {max(inizi) + finestra}, "
+            "oltre la fine del blocco di addestramento"
+        )
+
+
+def test_gli_inizi_non_dipendono_dalla_colonna_congelata(config: Config) -> None:
+    """Se dipendessero ancora da `is_sample_start`, qui non tornerebbe nulla."""
+    from dwf.data.dataset import sample_starts
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_blocchi(config, {"train": (0, 50)}, n=50)
+    assert sample_starts(_con_finestra(config, 6, 3), 0, "train") == list(range(0, 42))
+
+
+def test_i_confini_del_blocco_sono_semiaperti(config: Config) -> None:
+    from dwf.data.dataset import split_bounds
+
+    config.tables_dir.mkdir(parents=True, exist_ok=True)
+    _scrivi_blocchi(config, {"train": (0, 60), "val": (70, 100)}, n=100)
+    assert split_bounds(config, 0, "train") == (0, 60)
+    assert split_bounds(config, 0, "val") == (70, 100)
+    assert split_bounds(config, 0, "test") is None
+
+
 # --------------------------------------------------------------------------- #
 # Impronta dei dati
 # --------------------------------------------------------------------------- #
