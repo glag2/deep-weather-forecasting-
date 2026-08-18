@@ -35,7 +35,7 @@ from dwf.models.global_network import GlobalContextNet, GlobalNetworkSpec
 from dwf.models.heads import OutputLayout
 from dwf.models.losses import CompositeLoss
 from dwf.models.network import DeepWeatherNet, NetworkSpec
-from dwf.persistence import PersistenceError, load_model, save_model
+from dwf.persistence import METADATA_NAME, PersistenceError, load_model, save_model
 from dwf.tables import NORM_STATS, write_table
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
@@ -70,6 +70,31 @@ class FoldResult:
 
 def fold_dir(config: Config, fold: int) -> Path:
     return config.fold_dir(fold)
+
+
+def check_destination_free(destinazione: Path, architettura: str) -> None:
+    """Impedisce che un addestramento cancelli il checkpoint di un'architettura diversa.
+
+    La cartella di destinazione non dipende dall'architettura, quindi due corse
+    concorrenti finiscono nello stesso posto e la seconda sovrascrive la prima appena
+    migliora. E' costato due checkpoint da ore di calcolo, senza un solo messaggio:
+    riaddestrare la stessa architettura resta lecito, cambiarla sopra pesi altrui no.
+    """
+    percorso = destinazione / METADATA_NAME
+    if not percorso.exists():
+        return
+    try:
+        metadati = json.loads(percorso.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    precedente = metadati.get("architecture", "unet")
+    if precedente != architettura:
+        raise TrainingError(
+            f"In {destinazione} c'e' un checkpoint dell'architettura {precedente!r} e "
+            f"questa corsa userebbe {architettura!r}: sarebbe cancellato. Cambiare "
+            f"`paths.models_subdir` nella configurazione per dare a questa corsa una "
+            f"cartella propria."
+        )
 
 
 def build_network(
@@ -267,6 +292,7 @@ def train_fold(
     )
 
     destinazione = fold_dir(config, fold)
+    check_destination_free(destinazione, config.model.architecture)
     destinazione.mkdir(parents=True, exist_ok=True)
     write_table(stats.to_table(), NORM_STATS, destinazione)
 
@@ -331,6 +357,7 @@ def train_fold(
                 },
                 {
                     "in_channels": input_layout.n_channels,
+                    "architecture": config.model.architecture,
                     "fold": fold,
                     "epoch": epoca,
                     "val_loss": perdita_val,
@@ -380,6 +407,16 @@ def load_checkpoint(
             f"Il checkpoint attende {metadati['in_channels']} canali, la configurazione "
             f"ne produce {input_layout.n_channels}: configurazione e modello non "
             f"corrispondono"
+        )
+
+    # I checkpoint scritti prima che esistesse la scelta dell'architettura non hanno la
+    # chiave: allora ne esisteva una sola, quindi l'assenza identifica `unet`.
+    architettura_salvata = metadati.get("architecture", "unet")
+    if architettura_salvata != config.model.architecture:
+        raise TrainingError(
+            f"Il checkpoint e' stato addestrato con l'architettura "
+            f"{architettura_salvata!r}, la configurazione chiede "
+            f"{config.model.architecture!r}: i pesi non sono compatibili"
         )
 
     network = build_network(config, output_layout, input_layout.n_channels)

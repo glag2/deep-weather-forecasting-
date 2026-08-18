@@ -119,3 +119,38 @@ def test_la_configurazione_rifiuta_teste_incoerenti(config: Config) -> None:
         ).model_validate(
             {**config.model.model_dump(), "embed_channels": 100, "heads": 3}
         )
+
+
+def test_un_addestramento_non_cancella_il_checkpoint_di_un_altra_architettura(
+    tmp_path: Path,
+) -> None:
+    """Due corse concorrenti finiscono nella stessa cartella: la seconda cancellava la
+    prima appena migliorava, in silenzio. E' costato due checkpoint da ore di calcolo."""
+    import json
+
+    from dwf.train import TrainingError, check_destination_free
+
+    check_destination_free(tmp_path, "unet")
+
+    (tmp_path / "metadata.json").write_text(
+        json.dumps({"architecture": "global"}), encoding="utf-8"
+    )
+    with pytest.raises(TrainingError, match="sarebbe cancellato"):
+        check_destination_free(tmp_path, "unet")
+
+    check_destination_free(tmp_path, "global")
+
+
+def test_un_checkpoint_senza_architettura_e_letto_come_convoluzionale(
+    tmp_path: Path,
+) -> None:
+    """I checkpoint anteriori alla scelta dell'architettura non hanno la chiave: allora
+    ne esisteva una sola, quindi l'assenza la identifica."""
+    import json
+
+    from dwf.train import TrainingError, check_destination_free
+
+    (tmp_path / "metadata.json").write_text(json.dumps({"epoch": 3}), encoding="utf-8")
+    check_destination_free(tmp_path, "unet")
+    with pytest.raises(TrainingError, match="'unet'"):
+        check_destination_free(tmp_path, "global")
