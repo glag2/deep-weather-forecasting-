@@ -92,7 +92,7 @@ def configura(base: Config, giorni: int, seme: int, args) -> Config:
         }
     )
     percorsi = base.paths.model_copy(
-        update={"artifacts_subdir": f"bench/giorni{giorni:02d}_seed{seme}"}
+        update={"models_subdir": f"bench/giorni{giorni:02d}_seed{seme}"}
     )
     return base.model_copy(
         update={
