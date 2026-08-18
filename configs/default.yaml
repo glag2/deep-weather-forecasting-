@@ -109,6 +109,13 @@ model:
   # bersaglio, non il valore assoluto. E' l'unica scelta che nel banco esce dal rumore:
   # 6,613 degC senza, 3,625 con.
   anchor_diurnal: true
+  # Lo stesso riferimento, dato anche alla probabilita' di pioggia. Senza, il Brier era
+  # identico alla prima e all'ultima scadenza (0,2422 e 0,2420): il modello prevedeva
+  # la stessa pioggia per tre giorni. Misurato in OCCURRENCE_ANCHOR.md su quattro
+  # ampiezze, con un massimo netto qui: 0,2433 a 0, 0,1907 a 1,1, 0,2032 a 1,8, contro
+  # una dispersione fra semi di 0,0032. Alzarlo oltre peggiora, perche' la persistenza
+  # conta meno via via che la scadenza si allontana.
+  occurrence_anchor_logit: 1.1
 
 training:
   seed: 1234
