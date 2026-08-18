@@ -503,11 +503,358 @@ print(write_table(tabella, FORECAST, destinazione), f"({tabella.height:,} righe)
     ])
 
 
+def testing_notebook() -> nbformat.NotebookNode:
+    return notebook([
+        markdown("""
+# Collaudo di un modello addestrato
+
+Questo notebook risponde a **una** domanda: il modello serve a qualcosa, e quanto ci si
+puo' fidare di cio' che dice? Ogni sezione produce un grafico o una tabella e spiega
+come si legge, compresi i modi in cui un numero puo' sembrare buono senza esserlo.
+
+**La regola d'oro del progetto.** Un errore assoluto non dice nulla da solo. Il
+riferimento e' la **persistenza diurna**, cioe' ripetere l'osservazione di ieri alla
+stessa ora: e' gratis, non richiede nessun modello, e su questo dominio e' un avversario
+forte. Un errore di 2,3 gradi sembra buono finche' non si scopre che ripetere ieri ne
+fa 2,4.
+
+**Prerequisiti**: un fold addestrato (`scripts/train_model.py`) e valutato
+(`scripts/evaluate_model.py`). Senza la valutazione le tabelle non esistono e le celle
+lo dicono invece di fallire.
+"""),
+        code(PREAMBOLO),
+        markdown("""
+## 1. Che cosa sto collaudando
+
+Prima di guardare un punteggio va accertato **quale** modello lo ha prodotto. I
+metadati registrano architettura, numero di parametri, epoca migliore e l'impronta dei
+dati usati; il controllo di coerenza confronta le date dei file e segnala i casi in cui
+i pesi e la cronologia non appartengono alla stessa corsa, che e' un incidente gia'
+avvenuto in questo progetto.
+"""),
+        code("""
+from dwf.dashboard import coerenza_artefatti, informazioni_modello
+
+FOLD = 0
+informazioni = informazioni_modello(config, FOLD)
+for chiave, valore in informazioni.items():
+    if chiave != "history":
+        print(f"{chiave:22} {valore}")
+
+problemi = coerenza_artefatti(config, FOLD)
+if problemi:
+    print("\\nATTENZIONE, artefatti incoerenti:")
+    for problema in problemi:
+        print(f"  - {problema}")
+else:
+    print("\\nArtefatti coerenti fra loro.")
+"""),
+        markdown("""
+### La curva di apprendimento
+
+Da leggere cercando **due** cose. La prima e' se la validazione ha smesso di scendere
+mentre il train continuava: e' sovradattamento, e l'epoca migliore va scelta sulla
+validazione. La seconda e' se la validazione era ancora in discesa alla fine: allora il
+modello non e' sovradattato, e' semplicemente **interrotto troppo presto**, che in
+questo progetto e' il difetto misurato piu' grave.
+"""),
+        code("""
+import matplotlib.pyplot as plt
+
+from dwf.dashboard import curva_apprendimento
+
+curva = curva_apprendimento(informazioni)
+if curva is None:
+    print("Nessuna cronologia: il fold non e' stato addestrato in questa cartella.")
+else:
+    figura, asse = plt.subplots(figsize=(9, 4), constrained_layout=True)
+    asse.plot(curva["epoch"], curva["train_loss"], marker="o", label="train")
+    asse.plot(curva["epoch"], curva["val_loss"], marker="s", label="validazione")
+    migliore = curva.sort("val_loss").row(0, named=True)
+    asse.axvline(migliore["epoch"], color="grey", linestyle="--")
+    asse.annotate(f"migliore: epoca {migliore['epoch']}",
+                  (migliore["epoch"], migliore["val_loss"]),
+                  textcoords="offset points", xytext=(8, 10))
+    asse.set_xlabel("epoca")
+    asse.set_ylabel("perdita")
+    asse.legend()
+    plt.show()
+    print(f"ultima validazione: {curva['val_loss'].to_list()[-1]:.4f}, "
+          f"minimo: {migliore['val_loss']:.4f} all'epoca {migliore['epoch']}")
+"""),
+        markdown("""
+## 2. Il modello serve? Guadagno per scadenza
+
+Le nove scadenze **non sono equidistanti**: 06, 12 e 18 UTC distano 6, 6 e 12 ore, per
+cui "scadenza 3" significa il giorno dopo alle 06, non 18 ore dopo. Le etichette qui
+sotto lo dicono in chiaro.
+
+Come si legge il grafico: zero significa che ripetere il passato avrebbe dato lo stesso
+risultato. Un guadagno che **cala** con la scadenza e' normale, perche' anche la
+persistenza peggiora; quello che conta e' se il modello resta davanti.
+"""),
+        code("""
+from dwf.dashboard import etichetta_scadenza, guadagno_leggibile, metriche, per_scadenza
+
+SPLIT = "test"
+tabella = metriche(config, FOLD, SPLIT)
+if tabella is None:
+    print(f"Nessuna metrica per il blocco {SPLIT!r}: eseguire scripts/evaluate_model.py")
+else:
+    guadagno = guadagno_leggibile(config, tabella, "t2m", "rmse_celsius")
+    display(guadagno)
+"""),
+        code("""
+if tabella is not None:
+    andamento = per_scadenza(tabella, "t2m", "rmse_celsius")
+    largo = andamento.pivot(on="model", index="lead_slot", values="value").sort("lead_slot")
+    etichette = [etichetta_scadenza(config, int(s)) for s in largo["lead_slot"]]
+
+    figura, assi = plt.subplots(1, 2, figsize=(13, 4.5), constrained_layout=True)
+    for colonna in largo.columns:
+        if colonna != "lead_slot":
+            assi[0].plot(range(largo.height), largo[colonna], marker="o", label=colonna)
+    assi[0].set_title("Errore quadratico medio (degC)")
+    assi[0].set_xticks(range(largo.height))
+    assi[0].set_xticklabels(etichette, rotation=45, ha="right")
+    assi[0].legend()
+
+    disegnabile = guadagno.drop_nulls("Guadagno (%)")
+    colori = ["tab:green" if v > 0 else "tab:red" for v in disegnabile["Guadagno (%)"]]
+    assi[1].bar(range(disegnabile.height), disegnabile["Guadagno (%)"], color=colori)
+    assi[1].axhline(0.0, color="black", linewidth=1)
+    assi[1].set_title("Guadagno sulla migliore persistenza (%)")
+    assi[1].set_xticks(range(disegnabile.height))
+    assi[1].set_xticklabels(disegnabile["Scadenza"], rotation=45, ha="right")
+    plt.show()
+"""),
+        markdown("""
+### L'obiettivo dichiarato: 2 gradi a 24 ore
+
+Il committente ha fissato un bersaglio: **meno di 2 gradi di errore a 24 ore**. La cella
+lo verifica e, se non e' raggiunto, dice anche quanto guadagno servirebbe *rispetto
+alla persistenza*, che e' il modo utile di leggere la distanza: se la persistenza fa
+2,40 gradi, arrivare a 2,00 vuol dire batterla del 17 per cento, non del 5.
+"""),
+        code("""
+BERSAGLIO_GRADI = 2.0
+# Terza scadenza prevista, giorno 1 alle 18 UTC: 24 ore dopo l'ultima osservazione. Il
+# conto non e' 3 x 8 ore, perche' gli slot distano 6, 6 e 12 ore.
+SCADENZA_24H = 2
+
+if tabella is not None:
+    riga = andamento.filter(andamento["lead_slot"] == SCADENZA_24H)
+    valori = dict(zip(riga["model"].to_list(), riga["value"].to_list(), strict=True))
+    modello = valori.get("dwf")
+    riferimento = min(
+        (v for k, v in valori.items() if k.startswith("persistence")), default=None
+    )
+    print(f"scadenza {etichetta_scadenza(config, SCADENZA_24H)}")
+    for nome, valore in sorted(valori.items()):
+        print(f"  {nome:22} {valore:.3f} degC")
+    if modello is not None and riferimento is not None:
+        print(f"\\nobiettivo {BERSAGLIO_GRADI:.2f} degC: "
+              f"{'RAGGIUNTO' if modello <= BERSAGLIO_GRADI else 'NON raggiunto'}")
+        print(f"guadagno attuale sulla persistenza: "
+              f"{100 * (riferimento - modello) / riferimento:.1f} %")
+        print(f"guadagno necessario per l'obiettivo: "
+              f"{100 * (riferimento - BERSAGLIO_GRADI) / riferimento:.1f} %")
+"""),
+        markdown("""
+## 3. Ci si puo' fidare dell'incertezza dichiarata?
+
+Il modello non prevede un numero ma una distribuzione, quindi dichiara anche quanto e'
+sicuro. Due letture:
+
+- **rapporto dispersione/errore**: dovrebbe valere 1. Sotto 1 il modello e' **troppo
+  sicuro**, cioe' le sue barre d'errore sono piu' strette dei suoi errori veri, ed e' il
+  difetto peggiore perche' induce a fidarsi quando non si deve. Sopra 1 e' troppo
+  prudente: mai sbagliato, ma inutile.
+- **copertura al 90 %**: la quota di osservazioni cadute nell'intervallo annunciato come
+  al 90 per cento. Deve valere 0,90. E' la stessa informazione, nella forma in cui la
+  usa chi legge la previsione.
+"""),
+        code("""
+if tabella is not None:
+    incertezza = tabella.filter(
+        tabella["metric"].is_in(["spread_celsius", "spread_skill_ratio", "coverage_90"])
+        & (tabella["lead_slot"] >= 0)
+        & (tabella["month"] == -1)
+        & (tabella["model"] == "dwf")
+    ).pivot(on="metric", index="lead_slot", values="value").sort("lead_slot")
+
+    if not incertezza.height:
+        print("Nessuna metrica di incertezza: la valutazione e' anteriore alla loro"
+              " introduzione, basta rieseguirla.")
+    else:
+        display(incertezza)
+        figura, assi = plt.subplots(1, 2, figsize=(13, 4), constrained_layout=True)
+        assi[0].plot(incertezza["lead_slot"], incertezza["spread_skill_ratio"], marker="o")
+        assi[0].axhline(1.0, color="black", linestyle="--")
+        assi[0].set_title("dispersione / errore (1 = tarato)")
+        assi[0].set_xlabel("scadenza")
+        assi[1].plot(incertezza["lead_slot"], incertezza["coverage_90"], marker="s")
+        assi[1].axhline(0.90, color="black", linestyle="--")
+        assi[1].set_ylim(0.0, 1.0)
+        assi[1].set_title("copertura dell'intervallo al 90 % (0,90 = tarato)")
+        assi[1].set_xlabel("scadenza")
+        plt.show()
+"""),
+        markdown("""
+## 4. Le probabilita' mantengono la promessa?
+
+Se il modello annuncia il 40 per cento di pioggia, deve piovere in quaranta casi su
+cento. Il diagramma di affidabilita' mette la probabilita' annunciata sull'asse
+orizzontale e la frequenza osservata su quello verticale: **sopra** la diagonale il
+modello e' timido, **sotto** e' troppo sicuro.
+
+Due trappole. La prima: i bin con pochissimi casi oscillano molto e non vanno letti come
+tendenze, per questo la colonna `count` va guardata sempre. La seconda:
+l'**accuratezza** su un evento raro inganna: se piove nel 20 per cento dei casi,
+rispondere sempre "no" da' 80 per cento di accuratezza senza prevedere nulla. Per questo
+si guardano Brier e F1.
+"""),
+        code("""
+from dwf.dashboard import affidabilita, scarto_di_affidabilita
+
+diagramma = affidabilita(config, FOLD, SPLIT)
+if diagramma is None:
+    print("Nessun diagramma di affidabilita' salvato per questo blocco.")
+else:
+    scelta = diagramma.filter(diagramma["variable"] == "tp")
+    figura, asse = plt.subplots(figsize=(6, 6), constrained_layout=True)
+    asse.plot([0, 1], [0, 1], color="black", linestyle="--", label="promessa mantenuta")
+    for modello, gruppo in scelta.group_by("model", maintain_order=True):
+        asse.plot(gruppo["forecast_mean"], gruppo["observed_frequency"],
+                  marker="o", label=str(modello[0]))
+    asse.set_xlabel("probabilita' annunciata")
+    asse.set_ylabel("frequenza osservata")
+    asse.legend()
+    plt.show()
+    display(scarto_di_affidabilita(scelta))
+"""),
+        code("""
+if tabella is not None:
+    confronto = tabella.filter(
+        (tabella["variable"] == "tp") & (tabella["lead_slot"] == -1)
+        & (tabella["month"] == -1)
+        & tabella["metric"].is_in(["brier", "brier_skill_score", "base_rate",
+                                   "accuracy", "f1"])
+    ).pivot(on="metric", index="model", values="value")
+    display(confronto)
+    print(
+        "brier_skill_score positivo = meglio della sola frequenza di base.\\n"
+        "Se accuracy e' vicina a 1 - base_rate, il modello sta quasi sempre dicendo"
+        " \\"non piove\\" e l'accuratezza non e' un merito."
+    )
+"""),
+        markdown("""
+## 5. Dove sbaglia
+
+Una metrica scalare non dice **dove**. Un errore concentrato sui rilievi ha cause
+diverse da uno diffuso sull'oceano: il primo indica che manca la fisica del terreno, il
+secondo che manca la dinamica. La mappa aggrega piu' finestre di test, perche' su una
+sola finestra si vedrebbe il tempo di quel giorno e non un difetto del modello.
+"""),
+        code("""
+import numpy as np
+
+from dwf.dashboard import mappa_errori
+
+try:
+    # Ogni finestra e' una previsione sull'intero dominio: quattro bastano a distinguere
+    # un difetto sistematico dal tempo di un giorno, e non esauriscono la memoria se e'
+    # in corso un addestramento.
+    campo, usate = mappa_errori(config, FOLD, split=SPLIT, n_finestre=4,
+                                scadenza=SCADENZA_24H)
+except Exception as errore:
+    print(f"Mappa non calcolabile: {type(errore).__name__}: {errore}")
+else:
+    figura, asse = plt.subplots(figsize=(11, 6), constrained_layout=True)
+    immagine = asse.imshow(
+        campo, origin="upper", cmap="inferno", vmin=0.0,
+        vmax=float(np.nanpercentile(campo, 99)),
+        extent=[config.region.west, config.region.east,
+                config.region.south, config.region.north],
+    )
+    asse.plot(12.5, 46.5, marker="o", markersize=8, markerfacecolor="none",
+              markeredgecolor="cyan", markeredgewidth=1.8)
+    asse.annotate("Vigo di Cadore", (12.5, 46.5), textcoords="offset points",
+                  xytext=(9, 6), color="cyan")
+    figura.colorbar(immagine, ax=asse, shrink=0.85, label="degC")
+    asse.set_title(f"Errore quadratico medio per cella, {usate} finestre")
+    plt.show()
+    print(f"medio {float(np.mean(campo)):.2f} degC, "
+          f"mediano {float(np.median(campo)):.2f}, "
+          f"massimo {float(np.max(campo)):.2f}")
+"""),
+        markdown("""
+## 6. Previsto contro osservato, su una finestra
+
+L'ultimo controllo e' visivo, e serve a scoprire un difetto che le metriche non
+mostrano: la **sfumatura**. Un campo previsto troppo liscio puo' avere un errore
+quadratico ottimo, perche' con un errore quadratico puro conviene attenuare l'ampiezza
+invece di rischiare una struttura nel posto sbagliato, che verrebbe punita due volte.
+Se il campo previsto e' visibilmente piu' piatto di quello osservato, il numero e' buono
+e la previsione e' inutile.
+"""),
+        code("""
+from dwf.dashboard import confronto_visivo
+
+try:
+    confronto_campi = confronto_visivo(config, FOLD, split=SPLIT, posizione=0,
+                                       scadenza=SCADENZA_24H)
+except Exception as errore:
+    print(f"Confronto non calcolabile: {type(errore).__name__}: {errore}")
+else:
+    figura, assi = plt.subplots(1, 3, figsize=(16, 4.5), constrained_layout=True)
+    campi = (
+        ("previsto", confronto_campi.previsto, "coolwarm"),
+        ("osservato", confronto_campi.osservato, "coolwarm"),
+        ("differenza", confronto_campi.previsto - confronto_campi.osservato, "bwr"),
+    )
+    limite = float(np.nanpercentile(np.abs(confronto_campi.osservato), 99))
+    for asse, (titolo, campo_singolo, tavolozza) in zip(assi, campi, strict=True):
+        estremo = limite if titolo != "differenza" else 5.0
+        immagine = asse.imshow(campo_singolo, cmap=tavolozza, vmin=-estremo, vmax=estremo)
+        asse.set_title(titolo)
+        figura.colorbar(immagine, ax=asse, shrink=0.8)
+    plt.show()
+    print(
+        "Deviazione standard spaziale: "
+        f"previsto {float(np.nanstd(confronto_campi.previsto)):.2f}, "
+        f"osservato {float(np.nanstd(confronto_campi.osservato)):.2f}. "
+        "Se la prima e' molto piu' piccola, il modello sta sfumando."
+    )
+"""),
+        markdown("""
+## 7. Come tirare le somme
+
+In ordine, e senza scorciatoie:
+
+1. **Gli artefatti sono coerenti?** Se i pesi e la cronologia non appartengono alla
+   stessa corsa, tutto il resto e' aria.
+2. **Il guadagno sulla persistenza diurna e' positivo a tutte le scadenze?** Se non lo
+   e' a una scadenza, la' il modello non serve.
+3. **La curva di validazione era ancora in discesa?** Allora il numero non e' un limite
+   del modello, e' un limite del tempo di calcolo speso.
+4. **Il rapporto dispersione/errore e' vicino a 1?** Se e' molto sotto, la previsione
+   dichiara una fiducia che non ha.
+5. **Il campo previsto ha la stessa variabilita' spaziale di quello osservato?** Se no,
+   il modello sta comprando errore quadratico con la sfumatura.
+
+Un modello che passa i cinque punti e' utile. Uno che passa solo il secondo e' un numero
+in una tabella.
+"""),
+    ])
+
+
 def main() -> None:
     NOTEBOOKS.mkdir(exist_ok=True)
     for nome, costruttore in (
         ("01_training.ipynb", training_notebook),
         ("02_inference.ipynb", inference_notebook),
+        ("03_collaudo.ipynb", testing_notebook),
     ):
         percorso = NOTEBOOKS / nome
         documento = costruttore()
