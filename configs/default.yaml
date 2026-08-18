@@ -142,6 +142,13 @@ training:
   crop_size: 96
   samples_per_epoch: 512
   learning_rate: 0.0003
+  # Andamento del passo di apprendimento: `constant` o `cosine` (riscaldamento poi
+  # decadimento a coseno fino al 5% del passo pieno). Il valore predefinito resta
+  # costante perche' su questo progetto non e' ancora stato misurato: conta in
+  # proporzione al numero di passi, quindi era trascurabile con 2560 passi e va provato
+  # sulle corse lunghe.
+  lr_schedule: constant
+  warmup_fraction: 0.05
   weight_decay: 0.00001
   grad_clip_norm: 1.0
   num_workers: 0

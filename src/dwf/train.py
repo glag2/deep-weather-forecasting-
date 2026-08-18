@@ -187,6 +187,34 @@ def make_loader(
     )
 
 
+def build_scheduler(
+    optimizer: torch.optim.Optimizer, schedule: str, warmup_fraction: float, total_steps: int
+) -> torch.optim.lr_scheduler.LRScheduler | None:
+    """Andamento del passo di apprendimento lungo l'intero addestramento.
+
+    Un passo costante spreca le prime iterazioni, quando i pesi sono casuali e un passo
+    grande manda la perdita dove non serve, e le ultime, quando servirebbe rifinire e
+    invece il modello continua a rimbalzare attorno al minimo. Conta in proporzione al
+    numero di passi, quindi era trascurabile con 2560 e non lo e' piu' con dieci volte
+    tanto.
+    """
+    if schedule == "constant":
+        return None
+    if schedule != "cosine":
+        raise TrainingError(f"andamento del passo non riconosciuto: {schedule!r}")
+
+    riscaldamento = max(1, round(warmup_fraction * total_steps))
+
+    def fattore(passo: int) -> float:
+        if passo < riscaldamento:
+            return (passo + 1) / riscaldamento
+        avanzamento = (passo - riscaldamento) / max(1, total_steps - riscaldamento)
+        # Non scende a zero: gli ultimi passi servono ancora a qualcosa.
+        return 0.05 + 0.95 * 0.5 * (1.0 + math.cos(math.pi * min(1.0, avanzamento)))
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, fattore)
+
+
 def run_epoch(
     network: DeepWeatherNet,
     loader: DataLoader,
@@ -194,6 +222,7 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None,
     grad_clip: float | None,
     layout: OutputLayout,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> tuple[float, dict[str, float]]:
     """Una passata completa; se `optimizer` e' None esegue solo la valutazione."""
     allena = optimizer is not None
@@ -217,6 +246,8 @@ def run_epoch(
                 if grad_clip is not None:
                     torch.nn.utils.clip_grad_norm_(network.parameters(), grad_clip)
                 optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
 
             somma += float(perdita.total.detach())
             conteggio += 1
@@ -297,6 +328,12 @@ def train_fold(
     write_table(stats.to_table(), NORM_STATS, destinazione)
 
     n_epoche = epochs if epochs is not None else config.training.epochs
+    scheduler = build_scheduler(
+        optimizer,
+        config.training.lr_schedule,
+        config.training.warmup_fraction,
+        n_epoche * batch_per_epoca,
+    )
     cronologia: list[EpochRecord] = []
     migliore = float("inf")
     epoca_migliore = -1
@@ -316,7 +353,7 @@ def train_fold(
         avvio = time.perf_counter()
         perdita_train, componenti = run_epoch(
             network, loader_train, criterion, optimizer,
-            config.training.grad_clip_norm, output_layout,
+            config.training.grad_clip_norm, output_layout, scheduler,
         )
         perdita_val, _ = run_epoch(
             network, loader_val, criterion, None, None, output_layout

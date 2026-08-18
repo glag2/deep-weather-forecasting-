@@ -484,6 +484,9 @@ class TrainingConfig(_Base):
     crop_size: Annotated[int, Field(ge=16)] | None = 96
     samples_per_epoch: Annotated[int, Field(ge=1)] = 512
     learning_rate: Annotated[float, Field(gt=0.0)] = 3e-4
+    lr_schedule: Literal["constant", "cosine"] = "constant"
+    # Frazione dei passi totali spesa a salire dal passo nullo a quello pieno.
+    warmup_fraction: Annotated[float, Field(ge=0.0, lt=0.5)] = 0.05
     weight_decay: Annotated[float, Field(ge=0.0)] = 1e-5
     grad_clip_norm: Annotated[float, Field(gt=0.0)] | None = 1.0
     num_workers: Annotated[int, Field(ge=0)] = 0

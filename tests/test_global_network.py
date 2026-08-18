@@ -154,3 +154,48 @@ def test_un_checkpoint_senza_architettura_e_letto_come_convoluzionale(
     check_destination_free(tmp_path, "unet")
     with pytest.raises(TrainingError, match="'unet'"):
         check_destination_free(tmp_path, "global")
+
+
+def test_l_andamento_costante_non_crea_uno_scheduler() -> None:
+    import torch
+
+    from dwf.train import build_scheduler
+
+    peso = torch.nn.Parameter(torch.zeros(1))
+    ottimizzatore = torch.optim.AdamW([peso], lr=1.0)
+    assert build_scheduler(ottimizzatore, "constant", 0.05, 100) is None
+
+
+def test_l_andamento_a_coseno_sale_e_scende() -> None:
+    """Il passo deve partire piccolo, arrivare a quello pieno alla fine del riscaldamento
+    e ridursi verso il termine, senza mai annullarsi."""
+    import torch
+
+    from dwf.train import build_scheduler
+
+    peso = torch.nn.Parameter(torch.zeros(1))
+    ottimizzatore = torch.optim.AdamW([peso], lr=1.0)
+    scheduler = build_scheduler(ottimizzatore, "cosine", 0.1, 100)
+    assert scheduler is not None
+
+    letture = []
+    for _ in range(100):
+        letture.append(ottimizzatore.param_groups[0]["lr"])
+        ottimizzatore.step()
+        scheduler.step()
+
+    assert letture[0] < letture[9]
+    assert letture[9] == pytest.approx(1.0)
+    assert letture[-1] < letture[50] < letture[9]
+    assert letture[-1] > 0.0
+
+
+def test_un_andamento_sconosciuto_e_rifiutato() -> None:
+    import torch
+
+    from dwf.train import TrainingError, build_scheduler
+
+    peso = torch.nn.Parameter(torch.zeros(1))
+    ottimizzatore = torch.optim.AdamW([peso], lr=1.0)
+    with pytest.raises(TrainingError, match="non riconosciuto"):
+        build_scheduler(ottimizzatore, "lineare", 0.05, 100)
