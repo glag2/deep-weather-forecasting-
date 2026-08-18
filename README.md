@@ -162,6 +162,75 @@ training fa accesso casuale a finestre spaziotemporali, e **Polars/Parquet** com
 registro dei dati puliti (catalogo degli slot, controlli qualita', statistiche di
 normalizzazione, metriche, calibrazione, previsione finale).
 
+## Come funziona la pipeline
+
+Ogni passo legge quello che il precedente ha scritto. Si possono eseguire singolarmente.
+
+| # | Comando | Cosa fa |
+|---|---|---|
+| 1 | `scripts/check_cds_access.py` | Verifica token, licenze e ultima data ERA5 disponibile. |
+| 2 | `scripts/download_era5.py` | Scarica i GRIB mese per mese in `datasets/raw/`. Ripartibile. |
+| 3 | `scripts/ingest_era5.py` | Converte i GRIB in un unico store Zarr `(slot, 261, 401)` e registra gli slot in Parquet. Deaccumula pioggia e neve. |
+| 4 | `scripts/analyze_data.py` | Analisi esplorativa dello store: copertura, distribuzioni, prevedibilita'. Scrive `DATA_ANALYSIS.md`. |
+| 5 | `scripts/screen_features.py` | Misura quali famiglie di canali aiutano a prevedere il **cambiamento**. Scrive `FEATURES.md`. |
+| 6 | `scripts/screen_input_days.py` | Confronta 3, 7, 10, 14 giorni di storico. Scrive `INPUT_DAYS.md`. |
+| 7 | `scripts/compare_variants.py` | Confronta le cinque architetture a parita' di protocollo. Scrive `VARIANTS.md`. |
+| 8 | `scripts/train_model.py --fold 0` | Addestra un fold. Salva pesi e statistiche in `models/fold_00/`. |
+| 9 | `scripts/evaluate_model.py --fold 0 --split test` | Metriche sul test, calibrazione delle probabilita', scelta delle soglie, confronto con le persistenze. |
+| 10 | `scripts/predict_forecast.py --fold 0` | Previsione a 3 giorni sull'intera griglia, in Parquet. |
+| 11 | `scripts/report_forecast.py --fold 0` | Report PDF di 8 pagine con le mappe. |
+| 12 | `scripts/refresh_data.py` | Scarica e ingerisce solo cio' che manca, per aggiornare senza rifare tutto. |
+
+In mezzo, i dati passano da queste forme:
+
+```
+GRIB mensili -> store Zarr (slot x 261 x 401) -> finestra di 21 slot
+   -> 245 canali (stato, tendenze, vento, sole, termodinamica, statici)
+   -> rete -> 45 canali di uscita -> 9 slot previsti x 4 grandezze + incertezza
+   -> calibrazione -> Parquet -> PDF
+```
+
+## Prestazioni
+
+Modello valutato sul blocco di **test** del fold 0, mai usato ne' per addestrare ne'
+per scegliere le soglie. Il riferimento e' la **persistenza diurna** (ripetere ieri alla
+stessa ora), che su questo dominio e' un avversario molto forte.
+
+| Grandezza | Metrica | Modello | Persistenza diurna | Persistenza ingenua |
+|---|---|---:|---:|---:|
+| Temperatura | RMSE (degC) | **2.92** | 3.16 | 4.73 |
+| Pioggia si/no | F1 | **0.635** | 0.609 | 0.624 |
+| Pioggia si/no | Accuratezza | 0.709 | 0.726 | **0.739** |
+| Neve si/no | F1 | 0.493 | 0.561 | **0.590** |
+| Neve si/no | Accuratezza | 0.847 | 0.919 | **0.925** |
+| Pioggia e neve | F1 macro | 0.564 | 0.585 | **0.607** |
+
+241 finestre di test, 9 scadenze ciascuna, dominio intero. Ottenuti con
+`scripts/evaluate_model.py --fold 0 --split test`, che scrive `metrics.parquet`.
+
+**Come leggerla.** Sulla temperatura il modello batte la persistenza diurna a **tutte e
+nove le scadenze**, e il vantaggio non e' concentrato sulle prime: 2.02 contro 2.43 degC
+a sei ore, 3.40 contro 3.68 a tre giorni.
+
+Sulla neve **perde**, e conviene dire perche' invece di nasconderlo. Il modello prevede
+neve troppo spesso: recupera l'82 % dei casi contro il 60 % della persistenza, ma solo
+il 35 % delle sue segnalazioni e' corretto contro il 55 %. La soglia di decisione e'
+scelta sulla validazione, dove rende F1 0.568; sul test scende a 0.493. Cambiarla
+guardando il test sposterebbe il compromesso, ma sarebbe barare.
+
+**L'accuratezza sulla neve non va letta come un risultato.** La neve compare nel 9 % dei
+casi, quindi rispondere sempre "no" darebbe 90.9 %: entrambe le persistenze, al 92.5 %,
+superano di poco quella soglia banale. E' la ragione per cui la tabella riporta anche
+F1, che una risposta costante non puo' gonfiare.
+
+Sulla **qualita' della probabilita'**, che e' cio' che serve per decidere, il modello
+vince ovunque, neve compresa: punteggio di Brier 0.181 contro 0.274 sulla pioggia e
+0.066 contro 0.081 sulla neve, con errore di calibrazione 0.053 contro 0.274.
+
+**F1 macro** e' la media dei due F1 binari (pioggia e neve). Un F1 unico su tutto il
+modello non avrebbe senso: la temperatura e' continua e non ha una nozione di
+"positivo".
+
 ## Sviluppo
 
 ```bash
