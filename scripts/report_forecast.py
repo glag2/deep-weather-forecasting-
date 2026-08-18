@@ -17,6 +17,10 @@ from pathlib import Path
 import numpy as np
 
 from dwf.config import Config
+
+# Le metriche vivono nella cartella del fold, non in `tables/`: questa funzione le cerca
+# in entrambi i posti, e riusarla evita di riscrivere qui la ricerca sbagliata.
+from dwf.dashboard import metriche
 from dwf.data.dataset import ZarrWindowReader, build_reader
 from dwf.predict import latest_usable_start, load_calibrator, predict_window
 from dwf.report import report_path, write_report
@@ -68,6 +72,10 @@ def main() -> None:
         help="Usa le probabilita' grezze della rete, senza correggerne la scala.",
     )
     parser.add_argument(
+        "--no-documentation", action="store_true",
+        help="Solo mappe e andamenti, senza le pagine su modello, pipeline e lettura.",
+    )
+    parser.add_argument(
         "--saturated", action="store_true",
         help="Calore latente con aria satura, senza persistere la rugiada osservata.",
     )
@@ -111,6 +119,9 @@ def main() -> None:
         n_parameters=network.n_parameters,
         dewpoint_celsius=rugiada,
         pressure_pa=pressione,
+        architecture=config.model.architecture,
+        metrics=metriche(config, args.fold, "test"),
+        documentation=not args.no_documentation,
     )
     print(f"\nreport scritto: {percorso} ({percorso.stat().st_size / 1024:.0f} KiB)")
 

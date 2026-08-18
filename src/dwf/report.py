@@ -14,6 +14,7 @@ capovolte senza che nulla segnali l'errore.
 
 from __future__ import annotations
 
+import textwrap
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,12 @@ import polars as pl
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.figure import Figure
 
+from dwf.documentation import (
+    PREFISSO_VERBATIM,
+    SEZIONI_TECNICHE,
+    DocSection,
+    measured_section,
+)
 from dwf.predict import summarize
 from dwf.thermo import latent_heat_content
 
@@ -38,6 +45,13 @@ PAGE_SIZE_INCHES = (11.69, 8.27)
 # Pannelli per pagina: una griglia 3 x 3 copre esattamente le 9 scadenze previste.
 PANEL_ROWS = 3
 PANEL_COLUMNS = 3
+
+# Impaginazione delle pagine di testo. Larghezza e numero di righe sono ricavati dalla
+# pagina orizzontale con carattere a larghezza fissa da 9 punti: al di la' di questi
+# valori il testo esce dal foglio senza che nulla lo segnali, perche' matplotlib non
+# manda a capo e non impagina.
+DOC_LINE_WIDTH = 96
+DOC_LINES_PER_PAGE = 42
 
 # Coda esclusa dagli estremi della scala di colore. Con gli estremi assoluti un solo
 # punto anomalo appiattirebbe tutto il resto della mappa in una sola tinta.
@@ -309,6 +323,57 @@ def _map_page(
     pdf.savefig(figura)
 
 
+def wrap_section(section: DocSection, width: int = DOC_LINE_WIDTH) -> list[str]:
+    """Righe pronte da stampare, con i blocchi a larghezza fissa lasciati intatti.
+
+    Un blocco verbatim (tabella o comando) non va mandato a capo: l'allineamento e'
+    informazione, e riformattarlo lo distruggerebbe. Se una sua riga eccede la larghezza
+    disponibile, e' un difetto del testo e non qualcosa da nascondere tagliando, quindi
+    resta e sara' visibilmente troppo lunga.
+    """
+    righe: list[str] = []
+    for blocco in section.body:
+        if blocco.startswith(PREFISSO_VERBATIM):
+            righe.extend(
+                riga[len(PREFISSO_VERBATIM):] for riga in blocco.splitlines()
+            )
+        else:
+            righe.extend(textwrap.wrap(blocco, width=width) or [""])
+        righe.append("")
+    while righe and not righe[-1]:
+        righe.pop()
+    return righe
+
+
+def paginate(righe: Sequence[str], lines_per_page: int = DOC_LINES_PER_PAGE) -> list[list[str]]:
+    """Spezza le righe in pagine, senza troncare nulla."""
+    if lines_per_page < 1:
+        raise ReportError(f"Righe per pagina non valide: {lines_per_page}")
+    return [
+        list(righe[inizio : inizio + lines_per_page])
+        for inizio in range(0, max(len(righe), 1), lines_per_page)
+    ]
+
+
+def _documentation_pages(pdf: PdfPages, sections: Sequence[DocSection]) -> int:
+    """Aggiunge le pagine di testo tecnico e restituisce quante ne ha scritte."""
+    scritte = 0
+    for sezione in sections:
+        pagine = paginate(wrap_section(sezione))
+        for numero, pagina in enumerate(pagine, start=1):
+            titolo = sezione.title
+            if len(pagine) > 1:
+                titolo = f"{titolo} ({numero} di {len(pagine)})"
+            figura = _new_page(titolo)
+            figura.text(
+                0.045, 0.90, "\n".join(pagina),
+                fontsize=9, va="top", family="monospace", linespacing=1.35,
+            )
+            pdf.savefig(figura)
+            scritte += 1
+    return scritte
+
+
 def _summary_lines(forecast: Forecast) -> list[str]:
     """Riepilogo per scadenza in colonne a larghezza fissa, leggibile in monospazio."""
     intestazione = (
@@ -335,6 +400,7 @@ def _cover_page(
     fold: int | None,
     n_parameters: int | None,
     latent_heat_note: str,
+    architecture: str | None = None,
 ) -> None:
     n_lead, n_lat, n_lon = check_grid(forecast)
     riquadro = map_frame(forecast.latitudes, forecast.longitudes)
@@ -347,6 +413,7 @@ def _cover_page(
         f"dominio: {n_lat} x {n_lon} punti, "
         f"da {nord:.2f} N a {sud:.2f} N e da {ovest:.2f} E a {est:.2f} E",
         f"fold: {'non dichiarato' if fold is None else fold}",
+        f"architettura: {'non dichiarata' if architecture is None else architecture}",
         f"parametri del modello: "
         f"{'non dichiarati' if n_parameters is None else format(n_parameters, ',')}",
         f"calore latente: {latent_heat_note}",
@@ -549,11 +616,21 @@ def write_report(
     focus_row: int = VIGO_ROW,
     focus_column: int = VIGO_COLUMN,
     focus_place: str = VIGO_NAME,
+    architecture: str | None = None,
+    metrics: pl.DataFrame | None = None,
+    documentation: bool = True,
 ) -> Path:
     """Scrive il report PDF della previsione e restituisce il percorso prodotto.
 
     `dewpoint_celsius` e `pressure_pa` sono facoltativi e servono solo alla pagina del
     calore latente: se mancano si usa l'ipotesi di aria satura, dichiarata nel documento.
+
+    Con `documentation` il file contiene anche com'e' fatto il modello, com'e' fatta la
+    pipeline, come si riaddestra e come si leggono i risultati. Sta nello stesso PDF di
+    proposito: un documento tecnico separato invecchia da solo, e chi riceve la previsione
+    deve poter capire da cosa e' stata prodotta senza cercare altro. `metrics` porta i
+    numeri veri dell'ultima valutazione del fold; senza, la pagina corrispondente dichiara
+    di non averli invece di mostrare quelli di un'altra corsa.
     """
     check_grid(forecast)
     percorso = Path(destination).expanduser()
@@ -570,6 +647,7 @@ def write_report(
             fold=fold,
             n_parameters=n_parameters,
             latent_heat_note=ipotesi_latente,
+            architecture=architecture,
         )
         _map_page(
             pdf,
@@ -627,6 +705,8 @@ def write_report(
         _local_page(
             pdf, forecast, row=focus_row, column=focus_column, place=focus_place
         )
+        if documentation:
+            _documentation_pages(pdf, (*SEZIONI_TECNICHE, measured_section(metrics)))
 
     return percorso
 
@@ -658,6 +738,8 @@ def domain_mean_series(forecast: Forecast, fields: Sequence[str]) -> pl.DataFram
 
 
 __all__ = [
+    "DOC_LINES_PER_PAGE",
+    "DOC_LINE_WIDTH",
     "PAGE_SIZE_INCHES",
     "STANDARD_LAPSE_RATE_K_PER_M",
     "VIGO_COLUMN",
@@ -674,6 +756,8 @@ __all__ = [
     "latent_heat_fields",
     "local_series",
     "map_frame",
+    "paginate",
     "report_path",
+    "wrap_section",
     "write_report",
 ]

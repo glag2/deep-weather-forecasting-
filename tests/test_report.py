@@ -304,6 +304,7 @@ def test_un_campo_inesistente_e_un_errore(previsione_piccola: Forecast) -> None:
 def test_il_report_viene_scritto_con_tutte_le_pagine(
     tmp_path: Path, previsione_intera: Forecast
 ) -> None:
+    """Il report predefinito contiene le mappe **e** il testo tecnico: e' un file solo."""
     percorso = write_report(
         previsione_intera,
         tmp_path / "report.pdf",
@@ -312,6 +313,16 @@ def test_il_report_viene_scritto_con_tutte_le_pagine(
     )
     assert percorso.exists()
     assert percorso.stat().st_size > 20_000
+    assert numero_pagine(percorso) > N_PAGINE
+
+
+def test_il_testo_tecnico_puo_essere_escluso(
+    tmp_path: Path, previsione_intera: Forecast
+) -> None:
+    """Chi vuole solo le mappe deve poterle avere, senza modificare il codice."""
+    percorso = write_report(
+        previsione_intera, tmp_path / "solo_mappe.pdf", documentation=False
+    )
     assert numero_pagine(percorso) == N_PAGINE
 
 
@@ -325,6 +336,7 @@ def test_il_report_accetta_una_cella_di_focus_diversa(
         focus_row=2,
         focus_column=3,
         focus_place="cella di prova",
+        documentation=False,
     )
     assert percorso.stat().st_size > 10_000
     assert numero_pagine(percorso) == N_PAGINE
