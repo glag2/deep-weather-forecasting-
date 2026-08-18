@@ -138,6 +138,50 @@ _SPECS: tuple[VariableSpec, ...] = (
     VariableSpec(
         "geopotential", "z", "static", "m2 s-2", "Geopotenziale della superficie (orografia)"
     ),
+    # Descrittori di superficie invarianti. ERA5 li espone come campi a un solo istante:
+    # descrivono come il suolo scambia energia con l'aria, cioe' esattamente il processo
+    # che decide la temperatura a 2 m e che la sola quota non spiega. ERA5 non ha una
+    # frazione urbana: il guadagno sulle citta' riportato da Bakketun et al. viene da un
+    # campo SURFEX che qui non e' disponibile, e non va quindi atteso.
+    VariableSpec("soil_type", "slt", "static", "codice", "Tipo di suolo (classi 0-7)"),
+    VariableSpec(
+        "high_vegetation_cover", "cvh", "static", "0-1", "Frazione di vegetazione alta",
+        non_negative=True,
+    ),
+    VariableSpec(
+        "low_vegetation_cover", "cvl", "static", "0-1", "Frazione di vegetazione bassa",
+        non_negative=True,
+    ),
+    VariableSpec(
+        "type_of_high_vegetation", "tvh", "static", "codice", "Tipo di vegetazione alta"
+    ),
+    VariableSpec(
+        "type_of_low_vegetation", "tvl", "static", "codice", "Tipo di vegetazione bassa"
+    ),
+    VariableSpec(
+        "lake_cover", "cl", "static", "0-1", "Frazione di acque interne", non_negative=True
+    ),
+    VariableSpec("lake_depth", "dl", "static", "m", "Profondita' delle acque interne"),
+    VariableSpec(
+        "standard_deviation_of_orography", "sdor", "static", "m",
+        "Dispersione dell'orografia dentro la cella",
+    ),
+    VariableSpec(
+        "anisotropy_of_sub_gridscale_orography", "isor", "static", "0-1",
+        "Anisotropia dell'orografia sottogriglia",
+    ),
+    VariableSpec(
+        "angle_of_sub_gridscale_orography", "anor", "static", "rad",
+        "Orientamento dell'orografia sottogriglia",
+    ),
+    VariableSpec(
+        "slope_of_sub_gridscale_orography", "slor", "static", "m m-1",
+        "Pendenza dell'orografia sottogriglia",
+    ),
+    VariableSpec(
+        "standard_deviation_of_filtered_subgrid_orography", "sdfor", "static", "m",
+        "Dispersione dell'orografia filtrata",
+    ),
 )
 
 BY_CDS_NAME: dict[str, VariableSpec] = {spec.cds_name: spec for spec in _SPECS}
