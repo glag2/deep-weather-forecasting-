@@ -248,7 +248,26 @@ operativi.
 | Diffusione | Scartata | Risolve la generazione di ensemble; produciamo gia' incertezza esplicita e calibrata |
 | Foundation model | Rimandati | Richiedono livelli di pressione non presenti nel nostro dataset |
 
-## 7. Riferimenti
+## 7. Idee dai modelli linguistici: cosa si trasferisce e cosa no
+
+DeepSeek-V4 (arXiv:2606.19348) e' stato letto perche' esplicitamente richiesto. La sua
+tesi centrale non ci riguarda, ma due ingredienti secondari si'. Vale la pena separarli,
+perche' e' facile importare un nome invece di un meccanismo.
+
+| Ingrediente | Cosa risolve nel paper | Da noi |
+|---|---|---|
+| CSA e HCA, attenzione compressa e sparsa | Il costo quadratico dell'attenzione su un milione di token | **Non si applica.** Non abbiamo una sequenza lunga: abbiamo una griglia 261x401 letta in una volta sola. Il collo di bottiglia che quelle tecniche rimuovono qui non esiste |
+| mHC, connessioni residue su varieta' vincolata | Un flusso residuo piu' espressivo: si allarga fra i blocchi e si restringe prima di ciascuno | **Si applica.** E' indipendente dall'attenzione e vale per qualunque rete residua, U-Net convoluzionale compresa. Candidato vero per il confronto fra architetture |
+| Ottimizzatore Muon | Addestramento piu' efficiente a parita' di passi | **Si applica**, ed e' la prova piu' economica: cambia l'ottimizzatore, non la rete |
+| Previsione multi-token | Emettere piu' passi futuri in una volta | **Gia' fatto**, per costruzione: usciamo con tutte e nove le scadenze insieme |
+| Post-addestramento in due fasi con rinforzo | Allineamento e ragionamento | Non si applica: non c'e' preferenza umana da allineare, c'e' un'osservazione da colpire |
+
+La conclusione onesta e' che il titolo del paper, l'attenzione, e' la parte meno
+trasferibile, e le parti trasferibili non hanno nulla a che vedere con la meteorologia:
+sono un modo di collegare i blocchi e un modo di aggiornare i pesi. Vanno quindi
+misurate sul nostro banco come qualunque altra variante, senza credito d'ingresso.
+
+## 8. Riferimenti
 
 1. Karlbauer, Maddix, Ansari, Han, Gupta, Wang, Stuart, Mahoney (2024). *Comparing and
    Contrasting Deep Learning Weather Prediction Backbones on Navier-Stokes and
@@ -264,3 +283,5 @@ operativi.
    Science, 10.1126/science.adi2336.
 6. Liu et al. (2021). *Swin Transformer: Hierarchical Vision Transformer using Shifted
    Windows*. ICCV.
+7. DeepSeek-AI (2026). *DeepSeek-V4: Towards Highly Efficient Million-Token Context
+   Intelligence*. arXiv:2606.19348.
