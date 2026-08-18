@@ -25,6 +25,7 @@ from dwf.calibration import ProbabilityCalibrator
 from dwf.data.dataset import ZarrWindowReader, diurnal_baselines
 from dwf.data.features import InputLayout, NormStats, build_input_tensor
 from dwf.models.heads import OutputLayout
+from dwf.slots import advance_slots
 from dwf.tables import CALIBRATION, FORECAST, cast_to_schema, read_table
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
@@ -144,8 +145,11 @@ def predict_window(
     # Probabilita' che nevichi = probabilita' che precipiti, per la quota di neve.
     neve = probabilita * frazione
 
+    # Gli istanti previsti sono nel futuro e nello store non ci sono: leggerli da li'
+    # funzionava solo finche' si verificava il passato, e falliva sull'ultima finestra
+    # disponibile, cioe' l'unico caso in cui una previsione serve davvero.
     istanti = tuple(
-        reader.valid_time(start + n_input + passo)
+        advance_slots(riferimento, passo + 1, config.time.slot_hours)
         for passo in range(config.windows.output_slots)
     )
 

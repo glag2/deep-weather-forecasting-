@@ -1,4 +1,4 @@
-"""Test dell'algebra degli slot temporali.
+﻿"""Test dell'algebra degli slot temporali.
 
 Le finestre scorrevoli e gli split sono la parte piu' facile da sbagliare in
 silenzio: un off-by-one sposta i target di uno slot senza far fallire nulla, e il
@@ -17,6 +17,7 @@ from dwf.slots import (
     accumulation_coverage,
     accumulation_hours,
     accumulation_offsets,
+    advance_slots,
     build_rolling_folds,
     build_split_layout,
     days_for_month,
@@ -493,3 +494,46 @@ def test_un_riferimento_nel_futuro_viene_rifiutato() -> None:
 
     with pytest.raises(ValueError, match="non arriva abbastanza indietro"):
         diurnal_reference_index(0, 0, 3)
+
+
+def test_avanzare_di_slot_rispetta_intervalli_disuguali() -> None:
+    """Con 06, 12 e 18 UTC gli intervalli sono 6, 6 e 12 ore: moltiplicare per una durata
+    media sbaglierebbe di ore."""
+    ore = [6, 12, 18]
+    base = datetime(2026, 8, 11, 18)
+
+    attesi = [12, 18, 24, 36, 42, 48, 60, 66, 72]
+    for passo, ore_attese in enumerate(attesi, start=1):
+        istante = advance_slots(base, passo, ore)
+        assert (istante - base).total_seconds() / 3600 == ore_attese
+
+
+def test_avanzare_di_zero_slot_restituisce_l_istante_dato() -> None:
+    assert advance_slots(datetime(2026, 8, 11, 12), 0, [6, 12, 18]) == datetime(
+        2026, 8, 11, 12
+    )
+
+
+def test_avanzare_da_un_ora_non_configurata_e_rifiutato() -> None:
+    with pytest.raises(ValueError, match="non e' uno slot configurato"):
+        advance_slots(datetime(2026, 8, 11, 7), 1, [6, 12, 18])
+
+
+def test_avanzare_indietro_e_rifiutato() -> None:
+    with pytest.raises(ValueError, match="non negativo"):
+        advance_slots(datetime(2026, 8, 11, 6), -1, [6, 12, 18])
+
+
+def test_gli_istanti_previsti_non_dipendono_dallo_store() -> None:
+    """Una previsione riguarda slot che nello store non esistono: leggerli da li'
+    funzionava solo finche' si verificava il passato, e falliva sull'ultima finestra
+    disponibile, cioe' l'unico caso in cui una previsione serve."""
+    ore = [6, 12, 18]
+    ultimo_osservato = datetime(2026, 8, 11, 18)
+
+    istanti = [advance_slots(ultimo_osservato, passo + 1, ore) for passo in range(9)]
+
+    assert istanti[0] == datetime(2026, 8, 12, 6)
+    assert istanti[-1] == datetime(2026, 8, 14, 18)
+    assert len(set(istanti)) == 9
+

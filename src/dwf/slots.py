@@ -198,6 +198,25 @@ def slot_of_day(moment: datetime, slot_hours: Sequence[int]) -> int:
         ) from None
 
 
+def advance_slots(moment: datetime, steps: int, slot_hours: Sequence[int]) -> datetime:
+    """L'istante che si raggiunge avanzando di `steps` slot da `moment`.
+
+    Gli slot non sono equidistanti: con 06, 12 e 18 UTC gli intervalli sono di 6, 6 e 12
+    ore, quindi moltiplicare per una durata media sbaglierebbe. Serve perche' gli istanti
+    di una previsione **non sono nello store**: sono nel futuro, e leggerli da li' e'
+    possibile solo finche' si verifica il passato.
+    """
+    ordinate = sorted(slot_hours)
+    if steps < 0:
+        raise ValueError(f"steps deve essere non negativo: {steps}")
+    posizione = slot_of_day(moment, ordinate)
+    totale = posizione + steps
+    giorni, resto = divmod(totale, len(ordinate))
+    return datetime(
+        moment.year, moment.month, moment.day, ordinate[resto], tzinfo=moment.tzinfo
+    ) + timedelta(days=giorni)
+
+
 def diurnal_reference_index(lead_index: int, input_slots: int, slots_per_day: int) -> int:
     """Posizione, dentro la finestra, dell'ultima osservazione alla stessa ora del bersaglio.
 
