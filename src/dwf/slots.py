@@ -220,6 +220,16 @@ def diurnal_reference_index(lead_index: int, input_slots: int, slots_per_day: in
             f"La finestra osservata di {input_slots} slot non arriva abbastanza indietro "
             f"per la scadenza {lead_index}: servirebbe l'indice {indice}"
         )
+    # L'aritmetica sopra garantisce indice < input_slots, perche' `giorni_indietro`
+    # arrotonda per eccesso e quindi vale almeno `lead_index + 1` slot. Il controllo
+    # resta perche' questa e' la riga che separa un riferimento legittimo da una
+    # lettura del futuro: se qualcuno cambiasse la formula, il modello si limiterebbe
+    # a diventare misteriosamente bravo invece di fallire.
+    if indice >= input_slots:
+        raise ValueError(
+            f"Il riferimento per la scadenza {lead_index} cadrebbe all'indice {indice}, "
+            f"fuori dai {input_slots} slot osservati: sarebbe il futuro"
+        )
     return indice
 
 

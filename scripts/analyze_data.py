@@ -438,7 +438,7 @@ def main() -> None:
         "--stride", type=int, default=4,
         help="Sottocampionamento spaziale per le statistiche (1 = griglia intera).",
     )
-    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "DATA_ANALYSIS.md")
+    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "docs/DATA_ANALYSIS.md")
     args = parser.parse_args()
 
     config = Config.load(args.config, project_root=PROJECT_ROOT)

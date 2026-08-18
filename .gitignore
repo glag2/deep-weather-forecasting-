@@ -20,6 +20,16 @@
 # Credenziali CDS: mai committare. La procedura e le variabili richieste sono nel README.
 .cdsapirc
 
+# Area di lavoro: log delle esecuzioni, diagnostiche usa-e-getta, schermate, bozze.
+# Tutto cio' che serve a produrre un risultato ma non e' il risultato finisce qui, cosi'
+# la radice del repository resta leggibile. Nulla qui dentro e' necessario a rieseguire
+# la pipeline: i comandi che rigenerano ogni artefatto sono nel README.
+/tmp/
+*.err
+# Previsione stampata: la rigenera `scripts/report_forecast.py`, pesa oltre un megabyte
+# e cambia a ogni esecuzione.
+/report_previsione.pdf
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

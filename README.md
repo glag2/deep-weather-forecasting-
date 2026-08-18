@@ -169,8 +169,20 @@ uv run pytest tests -q
 uv run ruff check src tests scripts
 ```
 
-Lo stato dei lavori, le decisioni prese con le relative motivazioni e i problemi
-aperti sono in [`PROGRESS.md`](PROGRESS.md).
+## Documentazione
+
+Le relazioni sono in `docs/`, e tutte tranne la prima sono **rigenerate da uno
+script**: non vanno modificate a mano, perche' la prossima esecuzione sovrascrive.
+
+| File | Cosa contiene | Chi lo produce |
+|---|---|---|
+| [`docs/PROGRESS.md`](docs/PROGRESS.md) | Stato dei lavori, decisioni e problemi aperti | a mano |
+| [`docs/RESEARCH.md`](docs/RESEARCH.md) | Stato dell'arte letto e cosa se ne e' preso | a mano |
+| [`docs/INGESTION.md`](docs/INGESTION.md) | Come i GRIB diventano Zarr, e le anomalie trovate | a mano |
+| [`docs/DATA_ANALYSIS.md`](docs/DATA_ANALYSIS.md) | Analisi del dataset ingerito | `scripts/analyze_data.py` |
+| [`docs/VARIANTS.md`](docs/VARIANTS.md) | Confronto fra varianti di rete | `scripts/compare_variants.py` |
+| [`docs/INPUT_DAYS.md`](docs/INPUT_DAYS.md) | Quanti giorni di storico in ingresso | `scripts/screen_input_days.py` |
+| [`docs/OCCURRENCE_ANCHOR.md`](docs/OCCURRENCE_ANCHOR.md) | Ancoraggio della probabilita' di pioggia | `scripts/screen_occurrence_anchor.py` |
 
 ## Limiti noti
 

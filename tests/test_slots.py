@@ -464,3 +464,32 @@ def test_mese_fuori_intervallo_e_rifiutato(valore: str) -> None:
     """Un mese assurdo deve fallire subito, non a meta' di un download da ore."""
     with pytest.raises(ValueError, match="fuori intervallo"):
         parse_month(valore)
+
+
+def test_il_riferimento_diurno_resta_sempre_dentro_la_parte_osservata() -> None:
+    """La riga che separa un riferimento legittimo da una lettura del futuro.
+
+    L'ancoraggio somma alla previsione un'osservazione presa dalla finestra. Se
+    l'indice cadesse fra gli slot da prevedere, il modello leggerebbe la risposta e
+    ogni metrica migliorerebbe senza che il modello sia migliorato. La proprieta' e'
+    verificata su tutte le combinazioni plausibili, non su un esempio.
+    """
+    from dwf.slots import diurnal_reference_index
+
+    for slot_al_giorno in (1, 2, 3, 4, 6, 8):
+        for giorni_ingresso in range(1, 15):
+            input_slots = giorni_ingresso * slot_al_giorno
+            for scadenza in range(slot_al_giorno * 5):
+                indice = diurnal_reference_index(scadenza, input_slots, slot_al_giorno)
+                assert 0 <= indice < input_slots, (
+                    f"scadenza {scadenza} con {input_slots} slot osservati e "
+                    f"{slot_al_giorno} slot al giorno finisce a {indice}"
+                )
+
+
+def test_un_riferimento_nel_futuro_viene_rifiutato() -> None:
+    """Con zero slot osservati non esiste passato da cui prendere il riferimento."""
+    from dwf.slots import diurnal_reference_index
+
+    with pytest.raises(ValueError, match="non arriva abbastanza indietro"):
+        diurnal_reference_index(0, 0, 3)

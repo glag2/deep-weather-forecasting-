@@ -302,7 +302,7 @@ def main() -> None:
     parser.add_argument("--eval-windows", type=int, default=24)
     parser.add_argument("--amplitudes", type=float, nargs="+", default=[0.0, 0.6, 1.1, 1.8])
     parser.add_argument("--seeds", type=int, nargs="+", default=[1234, 101])
-    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "OCCURRENCE_ANCHOR.md")
+    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "docs/OCCURRENCE_ANCHOR.md")
     args = parser.parse_args()
 
     base = Config.load(args.config)

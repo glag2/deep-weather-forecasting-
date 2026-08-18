@@ -1,4 +1,4 @@
-﻿"""Quanti giorni di storico servono davvero in ingresso.
+"""Quanti giorni di storico servono davvero in ingresso.
 
 Il confronto non puo' essere fatto sul solo errore assoluto: cambiare la lunghezza
 della finestra cambia **quali** finestre esistono, perche' una storia piu' lunga esclude
@@ -114,7 +114,7 @@ def main() -> None:
     parser.add_argument("--crop", type=int, default=64)
     parser.add_argument("--samples", type=int, default=192)
     parser.add_argument("--eval-windows", type=int, default=40)
-    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "INPUT_DAYS.md")
+    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "docs/INPUT_DAYS.md")
     args = parser.parse_args()
 
     from dwf.data.dataset import sample_starts

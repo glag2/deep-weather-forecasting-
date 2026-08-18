@@ -254,7 +254,7 @@ def main() -> None:
         help="Sovrascrive il seme: ripetere una prova con semi diversi misura il rumore.",
     )
     parser.add_argument("--list", action="store_true", help="Elenca le prove e termina.")
-    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "VARIANTS.md")
+    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "docs/VARIANTS.md")
     args = parser.parse_args()
 
     prove = prove_predefinite()
