@@ -171,10 +171,10 @@ Ogni passo legge quello che il precedente ha scritto. Si possono eseguire singol
 | 1 | `scripts/check_cds_access.py` | Verifica token, licenze e ultima data ERA5 disponibile. |
 | 2 | `scripts/download_era5.py` | Scarica i GRIB mese per mese in `datasets/raw/`. Ripartibile. |
 | 3 | `scripts/ingest_era5.py` | Converte i GRIB in un unico store Zarr `(slot, 261, 401)` e registra gli slot in Parquet. Deaccumula pioggia e neve. |
-| 4 | `scripts/analyze_data.py` | Analisi esplorativa dello store: copertura, distribuzioni, prevedibilita'. Scrive `DATA_ANALYSIS.md`. |
-| 5 | `scripts/screen_features.py` | Misura quali famiglie di canali aiutano a prevedere il **cambiamento**. Scrive `FEATURES.md`. |
-| 6 | `scripts/screen_input_days.py` | Confronta 3, 7, 10, 14 giorni di storico. Scrive `INPUT_DAYS.md`. |
-| 7 | `scripts/compare_variants.py` | Confronta le cinque architetture a parita' di protocollo. Scrive `VARIANTS.md`. |
+| 4 | `scripts/analyze_data.py` | Analisi esplorativa dello store: copertura, distribuzioni, prevedibilita'. Scrive `docs/DATA_ANALYSIS.md`. |
+| 5 | `scripts/screen_features.py` | Misura quali famiglie di canali aiutano a prevedere il **cambiamento**. Scrive `docs/FEATURES.md`. |
+| 6 | `scripts/screen_input_days.py` | Confronta 3, 7, 10, 14 giorni di storico. Scrive `docs/INPUT_DAYS.md`. |
+| 7 | `scripts/compare_variants.py` | Confronta le cinque architetture a parita' di protocollo. Scrive `docs/VARIANTS.md`. |
 | 8 | `scripts/train_model.py --fold 0` | Addestra un fold. Salva pesi e statistiche in `models/fold_00/`. |
 | 9 | `scripts/evaluate_model.py --fold 0 --split test` | Metriche sul test, calibrazione delle probabilita', scelta delle soglie, confronto con le persistenze. |
 | 10 | `scripts/predict_forecast.py --fold 0` | Previsione a 3 giorni sull'intera griglia, in Parquet. |
@@ -253,6 +253,8 @@ script**: non vanno modificate a mano, perche' la prossima esecuzione sovrascriv
 | [`docs/VARIANTS.md`](docs/VARIANTS.md) | Confronto fra varianti di rete | `scripts/compare_variants.py` |
 | [`docs/INPUT_DAYS.md`](docs/INPUT_DAYS.md) | Quanti giorni di storico in ingresso | `scripts/screen_input_days.py` |
 | [`docs/OCCURRENCE_ANCHOR.md`](docs/OCCURRENCE_ANCHOR.md) | Ancoraggio della probabilita' di pioggia | `scripts/screen_occurrence_anchor.py` |
+| [`docs/FEATURES.md`](docs/FEATURES.md) | Quali famiglie di canali aiutano a prevedere il cambiamento | `scripts/screen_features.py` |
+| [`docs/NEARTIME.md`](docs/NEARTIME.md) | Latenza reale di ERA5 e sorgenti per il quasi tempo reale | a mano |
 
 ## Quanto vale il modello, oggi
 

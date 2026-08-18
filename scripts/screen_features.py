@@ -152,7 +152,7 @@ def main() -> None:
     parser.add_argument("--windows", type=int, default=40)
     parser.add_argument("--cells", type=int, default=400)
     parser.add_argument("--seed", type=int, default=1234)
-    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "FEATURES.md")
+    parser.add_argument("--output", type=Path, default=PROJECT_ROOT / "docs/FEATURES.md")
     args = parser.parse_args()
 
     config = Config.load(args.config)
