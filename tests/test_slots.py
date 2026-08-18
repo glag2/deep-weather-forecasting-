@@ -24,11 +24,13 @@ from dwf.slots import (
     expected_slot_times,
     expected_steps,
     find_gaps,
+    layout_from_bounds,
     max_rolling_folds,
     month_slot_times,
     months_between,
     parse_month,
     required_hours,
+    shift_layout,
     slot_of_day,
     slot_times_between,
     split_labels,
@@ -536,4 +538,45 @@ def test_gli_istanti_previsti_non_dipendono_dallo_store() -> None:
     assert istanti[0] == datetime(2026, 8, 12, 6)
     assert istanti[-1] == datetime(2026, 8, 14, 18)
     assert len(set(istanti)) == 9
+
+
+
+class TestScostamentoDeiFold:
+    """Un periodo escluso in testa all'archivio non deve inghiottire il primo fold.
+
+    Senza traslazione il fold 0 comincia allo slot 0, cioe' dentro il periodo escluso:
+    tutte le sue finestre vengono scartate e l'addestramento si ferma con "nessuna
+    finestra di train ammessa", un messaggio che non nomina la causa.
+    """
+
+    def _layout(self):
+        return layout_from_bounds(
+            {"train": (0, 40), "val": (50, 70), "test": (80, 100)},
+            input_slots=3,
+            output_slots=2,
+        )
+
+    def test_la_traslazione_sposta_tutti_i_blocchi(self) -> None:
+        spostato = shift_layout(self._layout(), 120)
+
+        assert spostato.bounds == {"train": (120, 160), "val": (170, 190), "test": (200, 220)}
+        # I campioni vengono rienumerati, non traslati a mano: restano coerenti coi blocchi.
+        assert min(spostato.sample_starts["train"]) == 120
+        assert max(spostato.sample_starts["train"]) == 155
+
+    def test_la_traslazione_conserva_il_numero_di_campioni(self) -> None:
+        originale = self._layout()
+        spostato = shift_layout(originale, 7)
+
+        for split in originale.bounds:
+            assert spostato.n_samples(split) == originale.n_samples(split)
+
+    def test_uno_scostamento_nullo_restituisce_lo_stesso_layout(self) -> None:
+        originale = self._layout()
+
+        assert shift_layout(originale, 0) is originale
+
+    def test_uno_scostamento_negativo_e_rifiutato(self) -> None:
+        with pytest.raises(ValueError, match="negativo"):
+            shift_layout(self._layout(), -1)
 

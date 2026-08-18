@@ -24,6 +24,7 @@ from dwf.slots import (
     days_for_month,
     months_between,
     required_hours,
+    shift_layout,
     slot_times_between,
     validate_accumulation_fits,
 )
@@ -695,30 +696,45 @@ class Config(_Base):
 
     # --- suddivisione temporale ---
 
-    def build_folds(self, n_slots: int | None = None) -> list[SplitLayout]:
+    def build_folds(
+        self, n_slots: int | None = None, *, first_slot: int = 0
+    ) -> list[SplitLayout]:
         """Fold di valutazione, uno solo se ``split.mode`` e' ``chronological``.
 
         Accetta ``n_slots`` per poter usare il numero di slot effettivamente presenti
         nell'archivio, che per dati mancanti puo' essere inferiore a quello atteso.
+
+        ``first_slot`` esclude dal calcolo la testa dell'archivio. Serve quando i primi
+        mesi sono tenuti fuori dall'addestramento: senza di esso il primo fold cadrebbe
+        dentro il periodo escluso, tutte le sue finestre verrebbero scartate e la corsa si
+        fermerebbe con "nessuna finestra di train ammessa", che non spiega la causa.
         """
         if n_slots is None:
             n_slots = self.time.n_slots
+        if first_slot < 0 or first_slot >= n_slots:
+            raise ValueError(
+                f"first_slot {first_slot} fuori dall'archivio di {n_slots} slot"
+            )
         per_day = self.time.slots_per_day
+        disponibili = n_slots - first_slot
 
         if self.split.mode == "chronological":
             return [
-                build_split_layout(
-                    n_slots,
-                    train_fraction=self.split.train_fraction,
-                    val_fraction=self.split.val_fraction,
-                    gap_slots=self.split.gap_slots,
-                    input_slots=self.windows.input_slots,
-                    output_slots=self.windows.output_slots,
+                shift_layout(
+                    build_split_layout(
+                        disponibili,
+                        train_fraction=self.split.train_fraction,
+                        val_fraction=self.split.val_fraction,
+                        gap_slots=self.split.gap_slots,
+                        input_slots=self.windows.input_slots,
+                        output_slots=self.windows.output_slots,
+                    ),
+                    first_slot,
                 )
             ]
 
-        return build_rolling_folds(
-            n_slots,
+        mobili = build_rolling_folds(
+            disponibili,
             initial_train_slots=self.split.initial_train_days * per_day,
             val_slots=self.split.val_days * per_day,
             test_slots=self.split.test_days * per_day,
@@ -729,6 +745,7 @@ class Config(_Base):
             expanding=self.split.expanding,
             n_folds=self.split.n_folds,
         )
+        return [shift_layout(fold, first_slot) for fold in mobili]
 
     # --- percorsi derivati ---
 

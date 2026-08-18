@@ -1,4 +1,4 @@
-"""Test dell'ingestione GRIB -> Zarr.
+﻿"""Test dell'ingestione GRIB -> Zarr.
 
 Le funzioni che manipolano la struttura temporale sono collaudate su dataset sintetici
 costruiti in memoria, che riproducono la forma reale dei file ERA5 verificata sui GRIB
@@ -11,7 +11,7 @@ suite resta eseguibile su una macchina senza dati.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +21,7 @@ import pytest
 import xarray as xr
 
 from dwf.config import Config
+from dwf.data.dataset import holdout_mask
 from dwf.data.ingest import (
     ACCUMULATED_DIMS,
     IngestError,
@@ -35,9 +36,17 @@ from dwf.data.ingest import (
     flatten_accumulated,
     initialize_store,
     open_grib,
+    primo_slot_addestrabile,
     slot_positions,
 )
-from dwf.tables import FOLDS, SLOT_STATS, SLOTS, cast_to_schema, validate_schema
+from dwf.tables import (
+    FOLDS,
+    SLOT_STATS,
+    SLOTS,
+    cast_to_schema,
+    validate_schema,
+    write_table,
+)
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 
@@ -454,3 +463,61 @@ def test_uno_store_esistente_non_viene_sovrascritto_per_sbaglio(config: Config) 
 
     assert initialize_store(config) == percorso
     assert (percorso / "segno.txt").exists()
+
+
+class TestFoldConPeriodoEscluso:
+    """Il periodo escluso in testa deve spostare i fold, non svuotarli.
+
+    Il difetto che questo previene ha una firma precisa: l'addestramento parte, non trova
+    finestre e si ferma dicendo "nessuna finestra di train ammessa", senza nominare il
+    periodo escluso come causa. Chi legge cerca dati mancanti per ore.
+    """
+
+    def _con_periodo(self, config: Config, inizio: str, fine: str) -> Config:
+        configurazione = config.model_copy(
+            update={
+                "split": config.split.model_copy(
+                    update={"holdout_start": inizio, "holdout_end": fine}
+                )
+            }
+        )
+        # `holdout_mask` legge il catalogo dal disco: senza scriverlo non c'e' nulla da
+        # confrontare con le date.
+        configurazione.tables_dir.mkdir(parents=True, exist_ok=True)
+        # `ingested` vuoto basta: qui conta solo la colonna degli istanti, non quali mesi
+        # siano davvero sul disco.
+        catalogo = build_catalogue(configurazione, ingested=set())
+        write_table(catalogo, SLOTS, configurazione.tables_dir)
+        return configurazione
+
+    def test_senza_periodo_i_fold_partono_dallo_slot_zero(self, config: Config) -> None:
+        assert primo_slot_addestrabile(config) == 0
+        assert config.build_folds()[0].bounds["train"][0] == 0
+
+    def test_un_periodo_in_testa_sposta_il_primo_fold_oltre_di_esso(
+        self, config: Config
+    ) -> None:
+        primo_mese = config.time.start_date
+        fine_esclusione = date(primo_mese.year, primo_mese.month, 15)
+        configurazione = self._con_periodo(
+            config, primo_mese.isoformat(), fine_esclusione.isoformat()
+        )
+
+        scostamento = primo_slot_addestrabile(configurazione)
+        assert scostamento > 0
+
+        fold = configurazione.build_folds(first_slot=scostamento)[0]
+        assert fold.bounds["train"][0] == scostamento
+        # La garanzia vera: nessun campione di addestramento comincia dentro il periodo.
+        escluso = holdout_mask(configurazione)
+        assert escluso is not None
+        assert not any(escluso[inizio] for inizio in fold.sample_starts["train"])
+
+    def test_un_periodo_alla_fine_non_sposta_nulla(self, config: Config) -> None:
+        """Le finestre che lo toccano vengono comunque rifiutate da `sample_starts`, quindi
+        spostare l'inizio sarebbe una complicazione senza effetto."""
+        ultimo = config.time.end_date
+        configurazione = self._con_periodo(config, ultimo.isoformat(), ultimo.isoformat())
+
+        assert primo_slot_addestrabile(configurazione) == 0
+

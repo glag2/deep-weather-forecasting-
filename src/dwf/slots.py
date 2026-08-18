@@ -387,6 +387,28 @@ def layout_from_bounds(
     )
 
 
+def shift_layout(layout: SplitLayout, offset: int) -> SplitLayout:
+    """Sposta in avanti di ``offset`` slot tutti i blocchi di un layout.
+
+    Serve quando la parte iniziale dell'archivio e' tenuta fuori dall'addestramento: i
+    fold vanno calcolati sulla lunghezza del tratto *disponibile*, altrimenti il primo
+    fold cadrebbe dentro il periodo escluso e resterebbe senza campioni, ma gli indici
+    scritti nelle tabelle devono restare quelli dell'archivio intero.
+    """
+    if offset < 0:
+        raise ValueError(f"Lo scostamento non puo' essere negativo: {offset}")
+    if offset == 0:
+        return layout
+    return layout_from_bounds(
+        {
+            nome: (inizio + offset, fine + offset)
+            for nome, (inizio, fine) in layout.bounds.items()
+        },
+        input_slots=layout.input_slots,
+        output_slots=layout.output_slots,
+    )
+
+
 def max_rolling_folds(
     n_slots: int,
     *,

@@ -527,6 +527,36 @@ def write_catalogue(config: Config, catalogue: pl.DataFrame) -> Path:
     return write_table(catalogue, SLOTS, config.tables_dir)
 
 
+def primo_slot_addestrabile(config: Config) -> int:
+    """Primo slot che i fold possono usare, saltando un periodo escluso iniziale.
+
+    Il caso concreto: l'archivio parte dal 2022 e il 2022-2023 e' tenuto fuori per essere
+    misurato come tempo mai visto. Il primo fold, che comincia allo slot 0, cadrebbe
+    interamente dentro il periodo escluso: le sue finestre verrebbero tutte scartate e
+    l'addestramento si fermerebbe dicendo "nessuna finestra di train ammessa", senza
+    nominare la causa.
+
+    Se il periodo escluso non tocca l'inizio dell'archivio non c'e' niente da spostare: le
+    finestre che lo sfiorano vengono comunque rifiutate da `sample_starts`.
+    """
+    if config.split.holdout_start is None:
+        return 0
+
+    from dwf.data.dataset import holdout_mask
+
+    escluso = holdout_mask(config)
+    if escluso is None or not bool(escluso[0]):
+        return 0
+    # Fine del blocco escluso iniziale: il primo slot libero dopo di esso.
+    liberi = np.flatnonzero(~escluso)
+    if liberi.size == 0:
+        raise IngestError(
+            "Il periodo escluso copre tutto l'archivio: non resterebbe nulla su cui "
+            "addestrare"
+        )
+    return int(liberi[0])
+
+
 def build_folds_table(config: Config, usable: np.ndarray | None = None) -> pl.DataFrame:
     """Assegnazione slot -> split per ciascun fold, con gli inizi di campione ammessi.
 
@@ -537,7 +567,9 @@ def build_folds_table(config: Config, usable: np.ndarray | None = None) -> pl.Da
     finestra = config.windows.input_slots + config.windows.output_slots
     righe: list[dict[str, Any]] = []
 
-    for indice_fold, fold in enumerate(config.build_folds()):
+    for indice_fold, fold in enumerate(
+        config.build_folds(first_slot=primo_slot_addestrabile(config))
+    ):
         for split, (inizio, fine) in fold.bounds.items():
             ammessi = set(fold.sample_starts[split])
             for slot_index in range(inizio, fine):
