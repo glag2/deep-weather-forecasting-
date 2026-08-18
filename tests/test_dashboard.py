@@ -20,8 +20,11 @@ from dwf.dashboard import (
     Riquadro,
     _accorcia,
     accuratezze_ingannevoli,
+    affidabilita,
+    calibrazione,
     copertura_mensile,
     curva_apprendimento,
+    effetto_calibrazione,
     guadagno_leggibile,
     informazioni_modello,
     metriche,
@@ -30,11 +33,12 @@ from dwf.dashboard import (
     riepilogo_leggibile,
     riepilogo_metriche,
     risorse,
+    scarto_di_affidabilita,
     spazio_dati,
     stato_progetto,
     struttura_fold,
 )
-from dwf.tables import METRICS, SLOTS, cast_to_schema
+from dwf.tables import CALIBRATION, METRICS, RELIABILITY, SLOTS, cast_to_schema
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "configs" / "default.yaml"
 
@@ -305,6 +309,96 @@ class TestMetriche:
 # --------------------------------------------------------------------------- #
 # Modello e risorse
 # --------------------------------------------------------------------------- #
+
+
+class TestAffidabilita:
+    """Le probabilita' vengono scritte da mesi: qui si verifica che siano leggibili bene."""
+
+    def _scrivi_affidabilita(self, config: Config, righe: list[dict]) -> None:
+        config.fold_dir(0).mkdir(parents=True, exist_ok=True)
+        cast_to_schema(pl.DataFrame(righe), RELIABILITY).write_parquet(
+            RELIABILITY.path(config.fold_dir(0))
+        )
+
+    def _riga(self, **campi) -> dict:
+        base = {
+            "model": "dwf", "split": "test", "fold": 0, "variable": "tp",
+            "lead_slot": -1,
+            "bin_lower": 0.1, "bin_upper": 0.2, "forecast_mean": 0.17,
+            "observed_frequency": 0.19, "count": 100,
+        }
+        return {**base, **campi}
+
+    def _scrivi_calibrazione(self, config: Config, righe: list[dict]) -> None:
+        config.fold_dir(0).mkdir(parents=True, exist_ok=True)
+        cast_to_schema(pl.DataFrame(righe), CALIBRATION).write_parquet(
+            CALIBRATION.path(config.fold_dir(0))
+        )
+
+    def test_senza_tabella_non_inventa_una_curva(self, config: Config) -> None:
+        assert affidabilita(config, 0) is None
+        assert calibrazione(config, 0) is None
+
+    def test_i_bin_vuoti_sono_scartati(self, config: Config) -> None:
+        """Un bin senza casi disegnato sembrerebbe una previsione perfettamente sbagliata."""
+        self._scrivi_affidabilita(
+            config,
+            [
+                self._riga(count=0, forecast_mean=float("nan")),
+                self._riga(bin_lower=0.2, bin_upper=0.3, count=50),
+            ],
+        )
+        tabella = affidabilita(config, 0)
+
+        assert tabella is not None
+        assert tabella.height == 1
+        assert tabella["bin_lower"][0] == 0.2
+
+    def test_lo_scarto_ha_il_segno_dell_eccesso_di_sicurezza(self, config: Config) -> None:
+        """Positivo deve significare "promette piu' di quanto accada", non il contrario."""
+        self._scrivi_affidabilita(
+            config, [self._riga(forecast_mean=0.43, observed_frequency=0.30)]
+        )
+        tabella = affidabilita(config, 0)
+        assert tabella is not None
+
+        scarti = scarto_di_affidabilita(tabella)
+        assert scarti["scarto"][0] == pytest.approx(0.13)
+
+    def test_la_calibrazione_si_legge_dalla_validazione(self, config: Config) -> None:
+        """Stimarla sul test userebbe due volte gli stessi dati."""
+        self._scrivi_calibrazione(
+            config,
+            [
+                {"fold": 0, "variable": "tp", "split": "val", "probability_in": 0.2,
+                 "probability_out": 0.3, "n_samples": 1000},
+                {"fold": 0, "variable": "tp", "split": "test", "probability_in": 0.2,
+                 "probability_out": 0.9, "n_samples": 1000},
+            ],
+        )
+        tabella = calibrazione(config, 0, "val")
+
+        assert tabella is not None
+        assert tabella.height == 1
+        assert tabella["probability_out"][0] == pytest.approx(0.3)
+
+    def test_l_effetto_misura_lo_spostamento_delle_probabilita(self, config: Config) -> None:
+        self._scrivi_calibrazione(
+            config,
+            [
+                {"fold": 0, "variable": "tp", "split": "val", "probability_in": 0.2,
+                 "probability_out": 0.3, "n_samples": 1000},
+                {"fold": 0, "variable": "tp", "split": "val", "probability_in": 0.6,
+                 "probability_out": 0.5, "n_samples": 1000},
+            ],
+        )
+        tabella = calibrazione(config, 0, "val")
+        assert tabella is not None
+
+        effetto = effetto_calibrazione(tabella)
+        assert effetto["spostamento_medio"][0] == pytest.approx(0.1)
+        assert effetto["massimo_grezzo"][0] == pytest.approx(0.6)
+        assert effetto["punti"][0] == 1000
 
 
 class TestModelloERisorse:

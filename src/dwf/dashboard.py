@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 
 from dwf.config import Config
-from dwf.tables import DOWNLOADS, FOLDS, METRICS, SLOTS
+from dwf.tables import CALIBRATION, DOWNLOADS, FOLDS, METRICS, RELIABILITY, SLOTS
 
 # Tecnologie che vale la pena mostrare, con il ruolo che hanno davvero nel progetto.
 # La descrizione dice a che cosa serve la tecnologia qui, non che cosa e' in generale.
@@ -340,6 +340,71 @@ def metriche(config: Config, fold: int, split: str = "test") -> pl.DataFrame | N
     # ancora eseguita", non "nessun errore": va distinta, altrimenti la pagina mostra
     # una tabella vuota che sembra un guasto.
     return selezione if selezione.height else None
+
+
+def affidabilita(config: Config, fold: int, split: str = "test") -> pl.DataFrame | None:
+    """Diagramma di affidabilita': probabilita' promessa contro frequenza osservata.
+
+    I bin vuoti vengono scartati: la valutazione li scrive con `count` nullo e
+    `forecast_mean` NaN, e disegnati sembrerebbero un tratto di curva a zero, cioe' una
+    previsione perfettamente sbagliata invece di un bin senza casi.
+    """
+    tabella = _leggi(RELIABILITY, config.fold_dir(fold))
+    if tabella is None or not tabella.height:
+        return None
+    selezione = tabella.filter(
+        (pl.col("split") == split) & (pl.col("fold") == fold) & (pl.col("count") > 0)
+    )
+    if not selezione.height:
+        return None
+    return selezione.sort(["variable", "model", "lead_slot", "bin_lower"])
+
+
+def scarto_di_affidabilita(tabella: pl.DataFrame) -> pl.DataFrame:
+    """Quanto la probabilita' promessa si discosta dalla frequenza osservata.
+
+    Il segno conta: positivo significa che il modello promette pioggia piu' spesso di
+    quanto piova, cioe' e' troppo sicuro, e chi legge una probabilita' deve saperlo.
+    """
+    return tabella.with_columns(
+        (pl.col("forecast_mean") - pl.col("observed_frequency")).alias("scarto")
+    ).select(
+        "model", "variable", "lead_slot", "bin_lower", "bin_upper", "forecast_mean",
+        "observed_frequency", "scarto", "count",
+    )
+
+
+def calibrazione(config: Config, fold: int, split: str = "val") -> pl.DataFrame | None:
+    """Mappa appresa dalla calibrazione: probabilita' grezza -> probabilita' corretta.
+
+    La calibrazione si stima sulla validazione, non sul test: stimarla sul test
+    userebbe due volte gli stessi dati e renderebbe il risultato finale ottimistico.
+    """
+    tabella = _leggi(CALIBRATION, config.fold_dir(fold))
+    if tabella is None or not tabella.height:
+        return None
+    selezione = tabella.filter((pl.col("split") == split) & (pl.col("fold") == fold))
+    return selezione.sort(["variable", "probability_in"]) if selezione.height else None
+
+
+def effetto_calibrazione(tabella: pl.DataFrame) -> pl.DataFrame:
+    """Di quanto la calibrazione sposta le probabilita', per variabile."""
+    return (
+        tabella.with_columns(
+            (pl.col("probability_out") - pl.col("probability_in")).abs().alias("spostamento")
+        )
+        .group_by("variable")
+        .agg(
+            pl.col("spostamento").mean().alias("spostamento_medio"),
+            pl.col("spostamento").max().alias("spostamento_massimo"),
+            pl.col("probability_in").min().alias("minimo_grezzo"),
+            pl.col("probability_in").max().alias("massimo_grezzo"),
+            pl.col("probability_out").min().alias("minimo_corretto"),
+            pl.col("probability_out").max().alias("massimo_corretto"),
+            pl.col("n_samples").first().alias("punti"),
+        )
+        .sort("variable")
+    )
 
 
 # L'ordine alfabetico metterebbe in cima "sf accuracy", che su una variabile presente
@@ -1104,10 +1169,13 @@ __all__ = [
     "Riquadro",
     "StatoProgetto",
     "accuratezze_ingannevoli",
+    "affidabilita",
+    "calibrazione",
     "catalogo_ingressi",
     "confronto_visivo",
     "copertura_mensile",
     "curva_apprendimento",
+    "effetto_calibrazione",
     "etichetta_scadenza",
     "guadagno_leggibile",
     "guadagno_su_persistenza",
@@ -1121,6 +1189,7 @@ __all__ = [
     "riepilogo_leggibile",
     "riepilogo_metriche",
     "risorse",
+    "scarto_di_affidabilita",
     "spazio_dati",
     "stato_progetto",
     "struttura_fold",

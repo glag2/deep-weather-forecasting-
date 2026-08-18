@@ -58,11 +58,14 @@ from dwf.dashboard import (  # noqa: E402
     NOMI_VARIABILI,
     TECNOLOGIE,
     accuratezze_ingannevoli,
+    affidabilita,
+    calibrazione,
     catalogo_ingressi,
     coerenza_artefatti,
     confronto_visivo,
     copertura_mensile,
     curva_apprendimento,
+    effetto_calibrazione,
     etichetta_scadenza,
     guadagno_leggibile,
     informazioni_modello,
@@ -74,6 +77,7 @@ from dwf.dashboard import (  # noqa: E402
     per_scadenza,
     riepilogo_leggibile,
     risorse,
+    scarto_di_affidabilita,
     spazio_dati,
     stato_progetto,
     struttura_fold,
@@ -1131,6 +1135,118 @@ def pagina_errori() -> None:
     griglia_di_riquadri(voci)
 
 
+def pagina_probabilita() -> None:
+    intestazione(
+        "Quanto valgono le probabilita'",
+        "Se il modello dice 40 % di pioggia, piove nel 40 % dei casi?",
+        "Una probabilita' e' utile solo se **mantiene la promessa**: su cento casi "
+        "annunciati al 40 % la pioggia deve arrivare in quaranta. Un modello puo' avere un "
+        "errore basso e probabilita' inutilizzabili, quindi le due cose si guardano "
+        "separatamente.",
+    )
+
+    split = st.selectbox(
+        "Blocco", ["test", "val"], index=0, format_func=lambda s: NOMI_BLOCCHI[s]
+    )
+    tabella_affidabilita = affidabilita(config, int(fold), split)
+    if tabella_affidabilita is None:
+        st.info(
+            "Nessun diagramma di affidabilita' per questo blocco: si ottiene eseguendo "
+            "`scripts/evaluate_model.py`, che scrive `reliability.parquet` nella cartella "
+            "del fold."
+        )
+    else:
+        variabili = sorted(tabella_affidabilita["variable"].unique().to_list())
+        variabile = st.selectbox(
+            "Grandezza", variabili, format_func=lambda v: NOMI_VARIABILI.get(v, v),
+            key="variabile_affidabilita",
+        )
+        scelta = tabella_affidabilita.filter(pl.col("variable") == variabile)
+
+        curve: dict[str, tuple[list[float], list[float]]] = {
+            NOMI_MODELLI.get(modello, modello): (
+                gruppo["forecast_mean"].to_list(),
+                gruppo["observed_frequency"].to_list(),
+            )
+            for modello, gruppo in scelta.group_by("model", maintain_order=True)
+        }
+        # La diagonale e' il modello perfettamente onesto: senza di lei il grafico non
+        # dice nulla, perche' non c'e' un riferimento rispetto a cui essere sopra o sotto.
+        curve["Promessa mantenuta"] = ([0.0, 1.0], [0.0, 1.0])
+        grafico_linee(
+            curve,
+            asse_x="probabilita' annunciata",
+            asse_y="frequenza osservata",
+        )
+        st.caption(
+            "Sopra la diagonale il modello e' **timido** (piove piu' di quanto prometta), "
+            "sotto e' **troppo sicuro**. I bin senza casi non sono disegnati: una curva "
+            "che scende a zero perche' un intervallo e' vuoto sembrerebbe un errore grave "
+            "e sarebbe solo assenza di dati."
+        )
+
+        scarti = scarto_di_affidabilita(scelta)
+        tabella(
+            scarti,
+            didascalia="«scarto» e' probabilita' annunciata meno frequenza osservata: "
+            "positivo significa che il modello promette l'evento piu' spesso di quanto "
+            "accada. «count» dice su quanti punti poggia la riga, e le righe con pochi "
+            "punti non vanno lette come tendenze.",
+        )
+        peggiore = scarti.sort(pl.col("scarto").abs(), descending=True).head(1)
+        if peggiore.height:
+            riga = peggiore.row(0, named=True)
+            st.caption(
+                f"Scostamento massimo: nel bin {riga['bin_lower']:.1f}-"
+                f"{riga['bin_upper']:.1f} il modello annuncia "
+                f"{riga['forecast_mean'] * 100:.0f} % e l'evento accade nel "
+                f"{riga['observed_frequency'] * 100:.0f} % dei casi "
+                f"({riga['count']:,} punti)."
+            )
+
+    st.subheader("La correzione applicata")
+    tabella_calibrazione = calibrazione(config, int(fold), "val")
+    if tabella_calibrazione is None:
+        st.info(
+            "Nessuna curva di calibrazione salvata. Viene stimata sulla validazione "
+            "durante la valutazione e scritta in `calibration.parquet`."
+        )
+        return
+
+    st.markdown(
+        "La calibrazione e' una funzione **monotona** stimata sulla validazione (algoritmo "
+        "PAVA) che riscrive le probabilita' grezze. E' stimata sulla validazione e non sul "
+        "test perche' usare il test per correggere il modello e poi per giudicarlo "
+        "renderebbe il giudizio ottimistico."
+    )
+    variabili_calibrate = sorted(tabella_calibrazione["variable"].unique().to_list())
+    curve_calibrazione = {
+        NOMI_VARIABILI.get(nome, nome): (
+            tabella_calibrazione.filter(pl.col("variable") == nome)["probability_in"].to_list(),
+            tabella_calibrazione.filter(pl.col("variable") == nome)["probability_out"].to_list(),
+        )
+        for nome in variabili_calibrate
+    }
+    curve_calibrazione["Nessuna correzione"] = ([0.0, 1.0], [0.0, 1.0])
+    grafico_linee(
+        curve_calibrazione,
+        asse_x="probabilita' grezza della rete",
+        asse_y="probabilita' corretta",
+    )
+    st.caption(
+        "Dove la curva sta sopra la diagonale la correzione alza la probabilita', dove "
+        "sta sotto la abbassa. Un tratto piatto significa che la rete distingueva valori "
+        "diversi a cui corrispondeva la stessa frequenza osservata."
+    )
+    tabella(
+        effetto_calibrazione(tabella_calibrazione),
+        didascalia="Quanto la correzione sposta le probabilita'. Un intervallo grezzo "
+        "molto stretto (minimo e massimo vicini) e' il sintomo di una rete che dice "
+        "quasi sempre la stessa cosa, e in quel caso nessuna calibrazione puo' aggiungere "
+        "l'informazione che manca.",
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Area: Clima
 # --------------------------------------------------------------------------- #
@@ -1584,6 +1700,10 @@ PAGINA_ERRORI = st.Page(
     pagina_errori, title="Dove si concentra l'errore",
     icon=":material/local_fire_department:", url_path="errori",
 )
+PAGINA_PROBABILITA = st.Page(
+    pagina_probabilita, title="Quanto valgono le probabilita'",
+    icon=":material/percent:", url_path="probabilita",
+)
 PAGINA_CLIMA = st.Page(
     pagina_clima, title="Andamenti climatici", icon=":material/public:", url_path="clima"
 )
@@ -1607,7 +1727,9 @@ navigazione = st.navigation(
         "Sintesi": [PAGINA_STATO, PAGINA_PROGETTO],
         "Dati": [PAGINA_COPERTURA, PAGINA_FOLD, PAGINA_INGRESSI],
         "Modello": [PAGINA_CHECKPOINT, PAGINA_USCITE],
-        "Valutazione": [PAGINA_QUALITA, PAGINA_CONFRONTO, PAGINA_ERRORI],
+        "Valutazione": [
+            PAGINA_QUALITA, PAGINA_PROBABILITA, PAGINA_CONFRONTO, PAGINA_ERRORI,
+        ],
         "Clima": [PAGINA_CLIMA],
         "Addestramento": [PAGINA_AVVIA, PAGINA_ESECUZIONI],
         "Sistema": [PAGINA_RISORSE],
