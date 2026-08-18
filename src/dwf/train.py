@@ -170,6 +170,7 @@ def make_loader(
     seed: int,
     max_batches: int | None,
     num_workers: int,
+    windows_per_batch: int = 1,
 ) -> DataLoader:
     sampler = WindowBatchSampler(
         n_windows=len(dataset.starts),
@@ -178,6 +179,7 @@ def make_loader(
         shuffle=shuffle,
         seed=seed,
         max_batches=max_batches,
+        windows_per_batch=windows_per_batch,
     )
     return DataLoader(
         dataset,
@@ -311,11 +313,13 @@ def train_fold(
         dataset_train, config.training.batch_size, shuffle=True,
         seed=config.training.seed + fold, max_batches=batch_per_epoca,
         num_workers=config.training.num_workers,
+        windows_per_batch=config.training.windows_per_batch,
     )
     loader_val = make_loader(
         dataset_val, config.training.batch_size, shuffle=False,
         seed=config.training.seed, max_batches=max(1, batch_per_epoca // 4),
         num_workers=config.training.num_workers,
+        windows_per_batch=config.training.windows_per_batch,
     )
 
     network = build_network(config, output_layout, input_layout.n_channels)

@@ -693,3 +693,63 @@ def test_indici_diversi_danno_ritagli_diversi_anche_da_deterministici(
     origini = {dataset._crop_origin(i) for i in range(8)}
 
     assert len(origini) > 1
+
+
+def test_un_lotto_puo_attingere_da_piu_finestre() -> None:
+    """Con una sola finestra per lotto il gradiente di ogni passo descrive un solo
+    giorno, e le peculiarita' di quel giorno pesano come se fossero regola."""
+    campionatore = WindowBatchSampler(
+        n_windows=4, crops_per_window=4, batch_size=4, shuffle=False, windows_per_batch=2
+    )
+
+    lotti = list(campionatore)
+
+    assert len(lotti) == len(campionatore)
+    for lotto in lotti:
+        finestre = {indice // 4 for indice in lotto}
+        assert len(finestre) == 2
+        assert len(lotto) == 4
+
+
+def test_una_sola_finestra_per_lotto_resta_il_comportamento_predefinito() -> None:
+    campionatore = WindowBatchSampler(
+        n_windows=3, crops_per_window=4, batch_size=4, shuffle=False
+    )
+
+    for lotto in campionatore:
+        assert len({indice // 4 for indice in lotto}) == 1
+
+
+def test_ogni_ritaglio_compare_una_volta_sola_nel_giro() -> None:
+    """Un indice ripetuto significherebbe addestrare due volte sullo stesso ritaglio e
+    non vederne un altro."""
+    campionatore = WindowBatchSampler(
+        n_windows=6, crops_per_window=4, batch_size=4, shuffle=False, windows_per_batch=2
+    )
+
+    visti = [indice for lotto in campionatore for indice in lotto]
+
+    assert sorted(visti) == list(range(24))
+
+
+def test_il_tetto_ai_lotti_vale_anche_con_piu_finestre_per_lotto() -> None:
+    campionatore = WindowBatchSampler(
+        n_windows=6, crops_per_window=4, batch_size=4, shuffle=False,
+        windows_per_batch=2, max_batches=3,
+    )
+
+    assert len(list(campionatore)) == 3
+    assert len(campionatore) == 3
+
+
+def test_piu_finestre_per_lotto_del_lotto_stesso_e_rifiutato(config: Config) -> None:
+    """Meglio fallire caricando la configurazione che scoprire lotti sbilanciati dopo
+    un'ora di addestramento."""
+    dati = config.training.model_dump()
+    dati.update({"batch_size": 4, "windows_per_batch": 8})
+    with pytest.raises(ValueError, match="supera batch_size"):
+        type(config.training).model_validate(dati)
+
+    dati.update({"batch_size": 4, "windows_per_batch": 3})
+    with pytest.raises(ValueError, match="non e' divisibile"):
+        type(config.training).model_validate(dati)

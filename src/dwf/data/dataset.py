@@ -618,6 +618,12 @@ class WindowBatchSampler(Sampler[list[int]]):
 
     Senza questo raggruppamento ogni elemento del batch pagherebbe una lettura
     completa da Zarr; con esso la lettura viene ammortizzata su tutto il batch.
+
+    Con ``windows_per_batch`` maggiore di uno il lotto attinge da piu' finestre. Il
+    risparmio di letture resta, perche' le finestre del gruppo stanno insieme nella cache
+    del lettore, ma il gradiente smette di descrivere una sola situazione
+    meteorologica: con una finestra per lotto ogni passo di ottimizzazione vede un solo
+    giorno, e le sue peculiarita' pesano come se fossero regola.
     """
 
     def __init__(
@@ -629,25 +635,45 @@ class WindowBatchSampler(Sampler[list[int]]):
         shuffle: bool = True,
         seed: int = 0,
         max_batches: int | None = None,
+        windows_per_batch: int = 1,
     ) -> None:
         self.n_windows = n_windows
         self.crops_per_window = max(1, crops_per_window)
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.max_batches = max_batches
+        self.windows_per_batch = max(1, min(windows_per_batch, max(1, n_windows)))
         self._rng = np.random.default_rng(seed)
+
+    @property
+    def crops_per_batch_per_window(self) -> int:
+        """Quanti ritagli ogni finestra del gruppo contribuisce a un lotto."""
+        return max(1, self.batch_size // self.windows_per_batch)
 
     def __iter__(self) -> Iterator[list[int]]:
         ordine = np.arange(self.n_windows)
         if self.shuffle:
             self._rng.shuffle(ordine)
 
+        per_finestra = self.crops_per_batch_per_window
         prodotti = 0
-        for finestra in ordine:
-            base = int(finestra) * self.crops_per_window
-            indici = list(range(base, base + self.crops_per_window))
-            for inizio in range(0, len(indici), self.batch_size):
-                lotto = indici[inizio : inizio + self.batch_size]
+        for avvio in range(0, len(ordine), self.windows_per_batch):
+            gruppo = ordine[avvio : avvio + self.windows_per_batch]
+            indici_gruppo = [
+                list(
+                    range(
+                        int(finestra) * self.crops_per_window,
+                        int(finestra) * self.crops_per_window + self.crops_per_window,
+                    )
+                )
+                for finestra in gruppo
+            ]
+            for taglio in range(0, self.crops_per_window, per_finestra):
+                lotto = [
+                    indice
+                    for indici in indici_gruppo
+                    for indice in indici[taglio : taglio + per_finestra]
+                ]
                 if not lotto:
                     continue
                 yield lotto
@@ -656,10 +682,13 @@ class WindowBatchSampler(Sampler[list[int]]):
                     return
 
     def __len__(self) -> int:
-        per_finestra = max(
-            1, (self.crops_per_window + self.batch_size - 1) // self.batch_size
+        gruppi = (self.n_windows + self.windows_per_batch - 1) // self.windows_per_batch
+        per_gruppo = max(
+            1,
+            (self.crops_per_window + self.crops_per_batch_per_window - 1)
+            // self.crops_per_batch_per_window,
         )
-        totale = self.n_windows * per_finestra
+        totale = gruppi * per_gruppo
         if self.max_batches is not None:
             return min(totale, self.max_batches)
         return totale
@@ -678,6 +707,10 @@ def build_reader(config: Config, layout: InputLayout) -> ZarrWindowReader:
     return ZarrWindowReader(
         config.zarr_path,
         dinamiche,
+        # Le finestre che compongono un lotto devono stare tutte in cache insieme,
+        # altrimenti attingere da piu' finestre le farebbe rileggere una per elemento e
+        # il risparmio del raggruppamento andrebbe perduto.
+        cache_size=max(2, config.training.windows_per_batch + 1),
         static_path=config.static_path if layout.static_variables else None,
         static_variables=layout.static_variables,
     )

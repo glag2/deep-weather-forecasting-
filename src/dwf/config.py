@@ -483,6 +483,9 @@ class TrainingConfig(_Base):
     batch_size: Annotated[int, Field(ge=1)] = 4
     crop_size: Annotated[int, Field(ge=16)] | None = 96
     samples_per_epoch: Annotated[int, Field(ge=1)] = 512
+    # Quante finestre temporali distinte compongono un lotto. Con 1 il gradiente di ogni
+    # passo descrive una sola situazione meteorologica.
+    windows_per_batch: Annotated[int, Field(ge=1)] = 1
     learning_rate: Annotated[float, Field(gt=0.0)] = 3e-4
     lr_schedule: Literal["constant", "cosine"] = "constant"
     # Frazione dei passi totali spesa a salire dal passo nullo a quello pieno.
@@ -497,6 +500,18 @@ class TrainingConfig(_Base):
     def _check_crop(self) -> Self:
         if self.crop_size is not None and self.crop_size % 8 != 0:
             raise ValueError("crop_size deve essere multiplo di 8 per i downsampling della rete")
+        if self.windows_per_batch > self.batch_size:
+            raise ValueError(
+                f"windows_per_batch {self.windows_per_batch} supera batch_size "
+                f"{self.batch_size}: ogni finestra del gruppo deve contribuire almeno "
+                f"un ritaglio"
+            )
+        if self.batch_size % self.windows_per_batch != 0:
+            raise ValueError(
+                f"batch_size {self.batch_size} non e' divisibile per windows_per_batch "
+                f"{self.windows_per_batch}: le finestre contribuirebbero un numero "
+                f"diverso di ritagli e il lotto sarebbe sbilanciato"
+            )
         return self
 
 
