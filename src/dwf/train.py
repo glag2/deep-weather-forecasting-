@@ -35,6 +35,7 @@ from dwf.models.global_network import GlobalContextNet, GlobalNetworkSpec
 from dwf.models.heads import OutputLayout
 from dwf.models.losses import CompositeLoss
 from dwf.models.network import DeepWeatherNet, NetworkSpec
+from dwf.optim import build_optimizer
 from dwf.persistence import METADATA_NAME, PersistenceError, load_model, save_model
 from dwf.tables import NORM_STATS, write_table
 
@@ -336,8 +337,9 @@ def train_fold(
     if config.training.channels_last:
         network = network.to(memory_format=torch.channels_last)
     criterion = CompositeLoss(output_layout, config.training.loss_weights)
-    optimizer = torch.optim.AdamW(
-        network.parameters(),
+    optimizer = build_optimizer(
+        network,
+        kind=config.training.optimizer,
         lr=config.training.learning_rate,
         weight_decay=config.training.weight_decay,
     )

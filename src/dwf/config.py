@@ -499,6 +499,12 @@ class TrainingConfig(_Base):
     # passo descrive una sola situazione meteorologica.
     windows_per_batch: Annotated[int, Field(ge=1)] = 1
     learning_rate: Annotated[float, Field(gt=0.0)] = 3e-4
+    # `cmuon` ortogonalizza l'aggiornamento delle matrici interne (Muon con le matrici
+    # fuse spezzate, arXiv:2608.02502) e lascia AdamW su norme, bias e i due estremi della
+    # rete. Attacca il collo di bottiglia misurato, cioe' il numero di passi, ma i
+    # risultati del paper sono a 675M parametri e lotto 1024: qui resta spento finche' non
+    # vince sul banco.
+    optimizer: Literal["adamw", "cmuon"] = "adamw"
     lr_schedule: Literal["constant", "cosine"] = "constant"
     # Frazione dei passi totali spesa a salire dal passo nullo a quello pieno.
     warmup_fraction: Annotated[float, Field(ge=0.0, lt=0.5)] = 0.05
