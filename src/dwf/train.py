@@ -191,6 +191,14 @@ def make_loader(
         batch_sampler=sampler,
         num_workers=num_workers,
         collate_fn=torch.utils.data.default_collate,
+        # Su Windows i processi nascono per `spawn`: reimportano il modulo, riaprono lo
+        # store e ricevono il dataset per pickle, e la misura dice che il primo batch
+        # costa 22 s contro 1,7. Ricrearli a ogni epoca pagherebbe quel prezzo venti volte
+        # in una corsa da venti epoche; tenerli vivi lo paga una volta sola.
+        persistent_workers=num_workers > 0,
+        # Un batch pronto per operaio: piu' di uno moltiplicherebbe la memoria, e un
+        # campione a 357 canali su tutto il dominio pesa circa 143 MB.
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
 

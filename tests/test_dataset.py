@@ -422,6 +422,59 @@ def test_nessun_inizio_ammesso_se_la_finestra_supera_i_dati(config: Config) -> N
     assert sample_starts(enorme, 0, "train") == []
 
 
+def test_il_lettore_sopravvive_alla_serializzazione(config: Config) -> None:
+    """Difetto reale: con `num_workers > 0` su Windows nessun processo partiva.
+
+    I figli nascono per `spawn` e ricevono il dataset per pickle, ma il lettore conteneva
+    uno store aperto e un lock, e la serializzazione moriva con "cannot pickle
+    '_thread.lock' object". Il messaggio non menzionava ne' il lettore ne' i dati, quindi
+    sembrava un difetto di PyTorch. Dopo il giro completo il lettore deve leggere gli
+    stessi valori di prima.
+    """
+    import pickle
+
+    import xarray as xr
+
+    from dwf.data.dataset import ZarrWindowReader
+
+    n_slot, altezza, larghezza = 6, 4, 5
+    istanti = [
+        datetime(2024, 1, 1, 6, tzinfo=UTC) + timedelta(hours=6 * i) for i in range(n_slot)
+    ]
+    store = xr.Dataset(
+        {
+            "t2m": (
+                ("slot", "latitude", "longitude"),
+                np.arange(n_slot * altezza * larghezza, dtype=np.float32).reshape(
+                    n_slot, altezza, larghezza
+                )
+                + 250.0,
+            )
+        },
+        coords={
+            "slot": np.arange(n_slot, dtype=np.int32),
+            "latitude": np.linspace(50.0, 47.0, altezza).astype(np.float32),
+            "longitude": np.linspace(5.0, 9.0, larghezza).astype(np.float32),
+            "valid_time": ("slot", np.array(istanti, dtype="datetime64[ns]")),
+        },
+    )
+    percorso = config.zarr_path
+    percorso.parent.mkdir(parents=True, exist_ok=True)
+    store.to_zarr(percorso, mode="w", consolidated=True)
+
+    lettore = ZarrWindowReader(percorso, ["t2m"])
+    prima = lettore.read_window(0, 3)
+
+    rinato = pickle.loads(pickle.dumps(lettore))
+    dopo = rinato.read_window(0, 3)
+
+    assert set(dopo) == set(prima)
+    for nome, valori in prima.items():
+        assert np.array_equal(dopo[nome], valori), nome
+    assert rinato.shape == lettore.shape
+    assert rinato.valid_time(0) == lettore.valid_time(0)
+
+
 class TestPeriodoEscluso:
     """Un anno tenuto fuori serve solo se non entra da nessuna porta secondaria.
 

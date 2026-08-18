@@ -99,26 +99,38 @@ class ZarrWindowReader:
         static_path: Any | None = None,
         static_variables: Sequence[str] = (),
     ) -> None:
+        # Conservati per poter riaprire lo store dopo la serializzazione: senza di questi
+        # il lettore non e' ricostruibile e i processi di caricamento non partono.
+        self._zarr_path = zarr_path
+        self._static_path = static_path
+        self._static_variables = tuple(static_variables)
+        self._variables = tuple(variables)
+        self._apri_store()
+        self._cache_size = max(1, cache_size)
+
+    def _apri_store(self) -> None:
+        """Apre lo store e ricostruisce cache, lock e istanti.
+
+        Vive in un metodo a parte perche' serve due volte: alla costruzione e dopo la
+        deserializzazione in un processo di caricamento.
+        """
+        import pandas as pd
         import xarray as xr
 
-        self._store = xr.open_zarr(zarr_path, consolidated=True)
-        self._variables = tuple(variables)
+        self._store = xr.open_zarr(self._zarr_path, consolidated=True)
         self._cache: dict[tuple[int, int], dict[str, np.ndarray]] = {}
         self._order: list[tuple[int, int]] = []
-        self._cache_size = max(1, cache_size)
         self._lock = threading.Lock()
 
         # Gli istanti si caricano una volta sola: leggerli dallo store a ogni campione
         # attraversa dask e costava 0,42 s per campione, cioe' quasi tutto il tempo di
         # costruzione del campione stesso.
-        import pandas as pd
-
         self._valid_time = pd.to_datetime(self._store.valid_time.values).to_pydatetime()
 
         self.static: dict[str, np.ndarray] = {}
-        if static_path is not None and static_variables:
-            statico = xr.open_zarr(static_path, consolidated=True)
-            for nome in static_variables:
+        if self._static_path is not None and self._static_variables:
+            statico = xr.open_zarr(self._static_path, consolidated=True)
+            for nome in self._static_variables:
                 if nome not in statico:
                     raise DatasetError(
                         f"Campo statico assente dallo store: {nome!r}. "
@@ -132,6 +144,23 @@ class ZarrWindowReader:
                 f"Variabili assenti dallo store: {mancanti}. "
                 f"Disponibili: {sorted(self._store.data_vars)}"
             )
+
+    def __getstate__(self) -> dict[str, Any]:
+        """Cosa viaggia verso un processo di caricamento.
+
+        Lo store aperto, il lock e la cache non sono serializzabili o non hanno senso
+        altrove: su Windows i figli nascono per `spawn` e ricevono il lettore per pickle,
+        quindi finche' questi campi partivano insieme al resto `num_workers > 0` non
+        avviava alcun processo e falliva con "cannot pickle '_thread.lock' object".
+        """
+        stato = self.__dict__.copy()
+        for campo in ("_store", "_lock", "_cache", "_order", "_valid_time", "static"):
+            stato.pop(campo, None)
+        return stato
+
+    def __setstate__(self, stato: dict[str, Any]) -> None:
+        self.__dict__.update(stato)
+        self._apri_store()
 
     @property
     def latitudes(self) -> np.ndarray:
