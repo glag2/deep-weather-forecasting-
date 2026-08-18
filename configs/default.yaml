@@ -175,6 +175,10 @@ training:
     precip_occurrence: 0.5
     precip_amount: 1.0
     snow_fraction: 0.5
+    # Termine spettrale, spento per ora: il suo effetto va misurato sul dominio intero
+    # prima di darlo per buono. Scritto qui e non lasciato al default perche' un peso
+    # che non compare nella configurazione e' un peso che nessuno ha scelto.
+    spectral: 0.0
 
 paths:
   # Volutamente diversa dalla cartella `Data/` gia' presente nel repo: su Windows

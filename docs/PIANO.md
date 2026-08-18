@@ -43,9 +43,11 @@ sola:
 
 | stato | voce | note |
 |---|---|---|
-| in corso | scarico livelli di pressione 2024-2026 | 96 richieste, ~2,4 GB, z500 t850 t500 q700 |
-| in corso | scarico 2022 e 2023 | 121 richieste, ~11 GB, porta le finestre da 961 a circa 1750 |
-| in corso | rifacimento interfaccia dashboard | delegato a un sotto-agente |
+| fatto | scarico livelli di pressione 2024-2026 | 96 scaricate, 65 gia' presenti, 2,2 GB in 120 file GRIB |
+| in corso | scarico 2022 e 2023 | 47 richieste su 121 al 18/08 ore 16:26; porta le finestre da 961 a circa 1750 |
+| fatto | rifacimento interfaccia dashboard | due sotto-agenti, 838 test verdi, ramo fuso |
+| in corso | confronto descrittori del suolo | `tmp/ab_base.yaml` 245 canali chiuso a 0,6776 (epoca 17 su 20), `tmp/ab_suolo.yaml` 261 canali avviato |
+| da fare | ingestione dei livelli di pressione | in uno store separato (`tmp/quota.yaml`), 245 -> 341 canali, poi rifare i fold |
 | da fare | corsa lunga sulla rete globale | 12.288 passi contro 2560, configurazione pronta |
 
 ## 4. Verifiche mai fatte, in ordine di rischio
@@ -62,7 +64,7 @@ Queste sono le cose che potrebbero essere rotte senza che nessuno lo sappia.
 | da fare | `weight_decay: 1e-5` | valore mille volte piu' basso del tipico per AdamW, mai giustificato; con piu' passi il sovradattamento cresce |
 | da fare | quanta parte del tempo per epoca e' lettura e quanta calcolo | tutte le decisioni sul budget si basano su una stima, non su una misura |
 | da fare | Docker end to end | ecCodes 2.28 nel container contro 2.42 raccomandato |
-| da fare | i notebook girano ancora? | non rigenerati dopo i cambi di layout dei canali |
+| in parte | i notebook girano ancora? | `03_collaudo.ipynb` eseguito cella per cella contro il fold 0: gira, e la mappa d'errore a otto finestre esaurisce la memoria se c'e' un addestramento in corso, per cui sta a quattro. I primi due non sono stati rieseguiti. |
 
 ## 5. Migliorie da provare, in ordine di effetto atteso
 
@@ -71,12 +73,14 @@ Queste sono le cose che potrebbero essere rotte senza che nessuno lo sappia.
 | da fare | piu' passi di ottimizzazione | e' il vincolo che lega tutto il resto |
 | da fare | piu' anni di dati | 2022-2023 in arrivo |
 | da fare | variabili in quota, 245 -> 341 canali | il flusso a 500 hPa e' cio' che pilota il tempo alle medie latitudini |
-| da fare | finestra di ritaglio piu' larga | separa il ritaglio dall'architettura come causa del campo recettivo stretto; **da fare ingrandendo**, mai riducendo i dati |
+| fatto | finestra intera invece del ritaglio | `crop_size: null` e `batch_size: 1`. Costo misurato: 3000 ms per passo sul dominio intero contro 800 per quattro ritagli 96, cioe' 28,7 contro 21,7 secondi per milione di punti. Il dominio intero e' meno efficiente per punto e si paga comunque, perche' il ritaglio addestrava dentro un orizzonte artificiale |
 | incerto | rete a nucleo globale | vince a nove epoche su dieci ed e' 2,4 volte piu' veloce, ma dodici epoche sono poche |
 | da fare | andamento del passo di apprendimento a coseno | implementato e spento, mai misurato qui |
 | da fare | ancoraggio avvettato invece che diurno | il riferimento attuale ignora che l'aria si sposta |
 | da fare | dorsali preaddestrate con timm o torchvision | da provare **appaiato**, preaddestrato contro casuale, altrimenti forma e pesi restano confusi |
-| da fare | ottimizzatore Muon e residui in stile mHC | dal lavoro su DeepSeek-V4, `RESEARCH.md` sezione 7 |
+| incerto | ottimizzatore CMuon | implementato in `src/dwf/optim.py` e spento. Ortogonalizzare costa 107 ms contro 42 di AdamW, il passo va da 235 a 319 ms: deve imparare un terzo in piu' per passo solo per pareggiare, quindi il confronto va fatto **a pari tempo**, non a pari epoche |
+| incerto | attention sink e contesto compresso (HCA) | implementati in `global_network.py` e spenti; iniezione a zero, quindi accendere il ramo non altera il punto di partenza |
+| da fare | residui in stile mHC | dal lavoro su DeepSeek-V4, `RESEARCH.md` sezione 7 |
 | da fare | media di piu' semi | riduzione dell'errore tipica del 3-8%, costo lineare in corse |
 
 ## 6. Chiusura del progetto
@@ -84,7 +88,9 @@ Queste sono le cose che potrebbero essere rotte senza che nessuno lo sappia.
 | stato | voce |
 |---|---|
 | da fare | prova a piena scala finale, per volonta' dell'utente rinviata alla fine |
-| da fare | relazione PDF con data e ora nel nome |
+| fatto | relazione PDF con data e ora nel nome | `tmp/relazione_dwf_2026-08-18_1745.pdf.json` |
+| fatto | notebook di collaudo di un modello addestrato | `notebooks/03_collaudo.ipynb` |
+| da fare | decidere il default di `model.architecture` | il nucleo globale vince in validazione e in velocita', ma non ha numeri sul test: **serve l'assenso dell'utente**, e' un default condiviso |
 | da fare | consolidare i branch e preparare il push, con l'utente che approva |
 | da fare | ricordare all'utente la rotazione del token CDS |
 | da fare | indice della documentazione in `docs/` |

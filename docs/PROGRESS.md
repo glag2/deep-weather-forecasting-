@@ -576,3 +576,96 @@ tempo di calcolo. Nessuna delle tre da sola spiegherebbe il risultato.
 
 Soglia dichiarata dall'utente: sotto 2 gradi a ventiquattro ore. Serve portare il
 guadagno sulla persistenza dal 5,5% al 17%, cioe' triplicarlo.
+
+## 15. Finestra intera, perdita verificata, incertezza giudicata
+
+Questa sezione copre la giornata del 18 agosto 2026. Ogni numero viene da uno script in
+`tmp/diagnostica/`, non da un'aspettativa.
+
+### 15.1 Si addestra sul dominio intero
+
+`crop_size: null`, `batch_size: 1`. Il ritaglio 96x96 addestrava la rete dentro un
+orizzonte artificiale: oltre il bordo non c'era nulla da guardare, quindi la rete non
+poteva imparare a usare informazione che in previsione le viene comunque data.
+
+Costo misurato con `tmp/diagnostica/finestra_piena.py`, con un addestramento in corso in
+parallelo:
+
+| configurazione | nucleo globale | rete a U |
+|---|---|---|
+| 1 ritaglio 96 | 189 ms | 2251 ms |
+| 4 ritagli 96 | 800 ms | 3343 ms |
+| 1 ritaglio 192 | 1098 ms | 3480 ms |
+| dominio intero 261x401 | **3000 ms** | **10499 ms** |
+
+Per milione di punti previsti: 21.705 ms con quattro ritagli, 28.660 con il dominio
+intero. Il dominio intero e' circa **un terzo meno efficiente per punto**, perche' il
+costo dell'attenzione cresce col quadrato del numero di token. Si paga perche' rimuove un
+difetto dell'addestramento, non perche' convenga.
+
+### 15.2 La perdita: due sospetti smentiti, un difetto trovato
+
+Controllata misurando (`tmp/diagnostica/verifica_perdita.py`), non rileggendola.
+
+| sospetto | esito | misura |
+|---|---|---|
+| il termine spettrale dipende dalla dimensione del ritaglio | **smentito** | 0,42 / 0,44 / 0,43 con lati 48, 96, 261 |
+| la protezione di Huber sulle code non entra mai in gioco | **smentito** | 37,8% dei punti piovosi oltre beta = 1, massimo normalizzato 6,1 |
+| il limite sulla log-varianza e' innocuo | **difetto vero** | gradiente **esattamente nullo** fuori dall'intervallo: 0,000000 a log-varianza 15 |
+
+Il taglio rigido rendeva muto per sempre un canale spinto fuori dall'intervallo.
+Sostituito con `soft_clamp`, due softplus specchiate: deviazione 0,0009 a sette unita'
+dentro, 0,049 a tre unita' dentro, gradiente 3,3e-3 a 15 e 1,5e-7 a 25.
+
+Nella stessa occasione i pesi della perdita sono diventati **obbligatori**: erano letti
+con un default per nome, e rinominare `precip_occurrence` avrebbe fatto passare quel
+termine da 0,5 a 1,0 in silenzio. Ora l'assenza di un nome ferma la costruzione, e
+`spectral: 0.0` e' scritto in `configs/default.yaml` perche' resti una scelta.
+
+### 15.3 L'incertezza dichiarata ora viene giudicata
+
+Il progetto promette una previsione che dice quanto e' sicura, e nessuna metrica la
+leggeva: la testa gaussiana poteva annunciare qualunque varianza. `evaluate.py` raccoglie
+`t2m_sigma` e produce tre righe per scadenza:
+
+- `spread_celsius`: incertezza media dichiarata, in gradi;
+- `spread_skill_ratio`: dispersione diviso errore quadratico. **1 e' il valore giusto**,
+  sotto 1 il modello e' troppo sicuro;
+- `coverage_90`: quota di osservazioni entro l'intervallo al 90%, deve valere 0,90.
+
+Le righe non esistono per i modelli che non dichiarano incertezza, come la persistenza.
+Le valutazioni salvate prima di oggi non le contengono: il notebook lo dice invece di
+fallire, e per ottenerle basta rieseguire `evaluate_model.py`.
+
+### 15.4 Notebook di collaudo
+
+`notebooks/03_collaudo.ipynb`, generato da `scripts/build_notebooks.py`. Sette sezioni:
+coerenza degli artefatti e curva di apprendimento, guadagno per scadenza con le etichette
+in chiaro, controllo esplicito dell'obiettivo dei 2 gradi a 24 ore con il guadagno
+necessario, taratura dell'incertezza, diagramma di affidabilita' con la trappola
+dell'accuratezza sugli eventi rari, mappa dell'errore con Vigo di Cadore, previsto contro
+osservato con il controllo della sfumatura via deviazione standard spaziale.
+
+Eseguito contro il fold 0. Due cose trovate mentre girava: la valutazione salvata precede
+le metriche di incertezza, e la mappa d'errore a **otto** finestre esaurisce la memoria se
+c'e' un addestramento in corso, per cui il notebook ne usa quattro.
+
+### 15.5 Codice nuovo e spento
+
+| dove | che cosa | perche' e' spento |
+|---|---|---|
+| `src/dwf/optim.py` | CMuon con ortogonalizzazione di Newton-Schulz, ramo AdamW per i tensori 1-D, stem e uscita | ortogonalizzare costa 107 ms contro 42, il passo va da 235 a 319 ms: va confrontato **a pari tempo di calcolo** |
+| `global_network.py` | attention sink (chiave e valore in piu', con valore appreso) | mai misurato su questa scala |
+| `global_network.py` | contesto compresso HCA, 33x51 -> 9x13 token, iniezione 1x1 inizializzata a zero | idem; l'iniezione a zero garantisce che accenderlo non cambi il punto di partenza |
+| 14 campi invarianti ERA5 | scaricati (4,0 MB, 143 s) e verificati uno per uno | solo 8 sono continui e utilizzabili; `dl` e' inutilizzabile grezzo (media 1130 m, valori di riempimento fuori dai laghi), i codici non sono numeri |
+
+Due risultati dei test su Newton-Schulz che vale la pena ricordare: l'iterazione quintica
+**non** converge all'identita' (punto fisso fra 0,68 e 1,14), e cinque passi **non
+bastano** su gradienti degeneri (da 1e4 si arriva a 37; con dieci passi a 1,7).
+
+### 15.6 Decisione aperta per l'utente
+
+Il default di `model.architecture` resta `unet`. Il nucleo globale ha un quinto dei
+parametri, e' 3,5 volte piu' veloce sul dominio intero e ha vinto il confronto in
+validazione (0,9755 contro 1,3031), ma non ha ancora numeri sul blocco di test. Cambiare
+un default condiviso senza quei numeri e' esattamente cio' che questo progetto evita.

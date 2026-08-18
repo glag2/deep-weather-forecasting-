@@ -18,11 +18,12 @@ un fattore ``patch`` per lato: il dominio intero diventa 33x51 token, e il costo
 trattabile. Il dettaglio fine non passa dal nucleo globale ma da una scorciatoia
 convolutiva a piena risoluzione, che e' il posto giusto per il dettaglio locale.
 
-**Perche' resta applicabile al dominio intero.** Ci si addestra su ritagli 96x96 e si
-prevede su 261x401, quindi nessun peso puo' dipendere dal *numero* di token.
+**Perche' non dipende dalla dimensione dell'ingresso.** Oggi si addestra sul dominio
+intero, ma nessun peso dipende dal *numero* di token, e questo va conservato: e' cio' che
+permette di ritagliare per fare esperimenti rapidi e prevedere comunque su 261x401.
 L'attenzione non ne dipende per costruzione; la posizione e' iniettata con una
 convoluzione depthwise invece che con una tabella di posizioni assolute, che sarebbe
-legata a una dimensione fissa e renderebbe la rete inutilizzabile fuori dal ritaglio.
+legata a una dimensione fissa.
 """
 
 from __future__ import annotations

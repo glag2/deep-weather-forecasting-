@@ -231,11 +231,22 @@ vince ovunque, neve compresa: punteggio di Brier 0.181 contro 0.274 sulla pioggi
 modello non avrebbe senso: la temperatura e' continua e non ha una nozione di
 "positivo".
 
+## Notebook
+
+Generati da `scripts/build_notebooks.py`, quindi non vanno modificati a mano.
+
+| Notebook | A cosa risponde |
+|---|---|
+| `notebooks/01_training.ipynb` | Addestra un fold e mostra perche' la validazione e' a finestra mobile. |
+| `notebooks/02_inference.ipynb` | Produce una previsione e la legge sulle mappe. |
+| `notebooks/03_collaudo.ipynb` | **Collauda un modello addestrato**: coerenza degli artefatti, guadagno per scadenza, controllo dell'obiettivo dei 2 gradi a 24 ore, taratura dell'incertezza, affidabilita' delle probabilita', mappa dell'errore, e il controllo della sfumatura. Ogni sezione spiega come si legge, comprese le trappole. |
+
 ## Sviluppo
 
 ```bash
 uv run pytest tests -q
 uv run ruff check src tests scripts
+uv run python scripts/build_notebooks.py
 ```
 
 ## Documentazione
@@ -281,8 +292,18 @@ nessuna variabile in quota, 2,7 visite per finestra in tutto l'addestramento.
   disponibili riguarda quindi giorni gia' trascorsi: e' un hindcast verificabile,
   utile per validare, non una previsione operativa. Per il tempo reale servirebbe una
   sorgente diversa, come <https://data.ecmwf.int>.
-- Il training su CPU e' possibile solo grazie all'addestramento su crop spaziali: la
-  rete e' completamente convoluzionale e viene poi applicata al dominio intero.
+- **Il modello e' poco addestrato, e si sa di quanto.** Con le impostazioni usate finora
+  l'addestramento vedeva 2560 passi, cioe' 0,94 passate sui dati e 2,7 visite per
+  finestra. Un modello che ha guardato ogni esempio meno di tre volte non ha ancora un
+  limite proprio: ha un limite di tempo di calcolo.
+- **L'addestramento e' sulla finestra intera, non su ritagli.** Il ritaglio 96x96 rendeva
+  il training molto piu' economico, ma insegnava alla rete a decidere dentro un orizzonte
+  che in previsione non esiste. Costo misurato del cambio: 3000 ms per passo sul dominio
+  intero contro 800 ms per quattro ritagli, cioe' 28,7 contro 21,7 secondi per milione di
+  punti previsti.
+- **L'incertezza dichiarata e' misurabile solo dalle valutazioni recenti.** Le tabelle
+  prodotte prima dell'introduzione delle metriche `spread_skill_ratio` e `coverage_90` non
+  le contengono; basta rieseguire `scripts/evaluate_model.py`.
 
 ## Licenza
 
