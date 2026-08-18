@@ -182,6 +182,44 @@ L'ingestione **non corregge** il dato, per restare fedele alla sorgente. La corr
 appartiene alla costruzione del target, dove il rapporto viene limitato a [0, 1] e
 definito solo sopra la soglia di 0,1 mm.
 
+### 3.7 I quattordici campi invarianti, verificati uno per uno
+
+I descrittori di superficie sono stati scaricati in un'unica richiesta da 4,0 MB
+(`static.grib`, un solo istante) e letti con `tmp/diagnostica/verifica_statici.py`. Tutti
+e quattordici sono presenti sulla griglia 261x401. Intervalli misurati:
+
+| Campo | Significato | Minimo | Massimo | Media |
+|---|---|---|---|---|
+| `lsm` | frazione di terra | 0 | 1 | 0,5200 |
+| `z` | geopotenziale (m2 s-2) | -1260,77 | 31544,98 | 2588,78 |
+| `slt` | tipo di suolo (classi) | 0 | 7 | 1,11 |
+| `cvh` | frazione vegetazione alta | 0 | 1 | 0,1335 |
+| `cvl` | frazione vegetazione bassa | 0 | 1 | 0,1921 |
+| `tvh` | tipo vegetazione alta | 0 | 19 | 4,05 |
+| `tvl` | tipo vegetazione bassa | 0 | 17 | 2,26 |
+| `cl` | frazione acque interne | 0 | 1 | 0,0165 |
+| `dl` | profondita' acque interne (m) | 0,50 | 6218,29 | 1129,69 |
+| `sdor` | dispersione orografia (m) | 0 | 672,35 | 30,53 |
+| `isor` | anisotropia orografia | 0 | 0,9869 | 0,2712 |
+| `anor` | orientamento orografia (rad) | -1,5578 | 1,5627 | 0,3823 |
+| `slor` | pendenza orografia | 0,0001 | 0,1177 | 0,0051 |
+| `sdfor` | dispersione orografia filtrata (m) | 0 | 526,94 | 21,09 |
+
+Due valori sembrano anomali e vanno spiegati, non corretti.
+
+**Il geopotenziale e' negativo dove c'e' terra sotto il livello del mare.** Il minimo
+-1260,77 m2 s-2 corrisponde a -128,6 m: e' terreno reale, non un errore di segno. Il
+dominio comprende la depressione del Caspio e altre aree sotto il livello del mare.
+
+**`dl` non e' un campo utilizzabile come canale grezzo.** Una profondita' media di 1130 m
+e' impossibile per le acque interne europee, e il massimo di 6218 m non appartiene a
+nessun lago: ERA5 definisce `dl` **su tutta la griglia**, con valori di riempimento dove
+non ci sono laghi, e la frazione `cl` ha media 0,0165, cioe' il campo e' significativo su
+meno del 2% dei punti. Usato cosi' come sta, `dl` inietterebbe un segnale di "acqua
+profonda" sopra l'oceano e sopra la terraferma. Va quindi usato **solo moltiplicato per
+`cl`**, oppure lasciato fuori: per questo non entra nella lista predefinita dei campi
+statici, mentre gli altri tredici sono utilizzabili direttamente.
+
 ---
 
 ## 4. Le tabelle Parquet
