@@ -231,6 +231,44 @@ def test_senza_slot_non_si_calcolano_statistiche() -> None:
         compute_norm_stats(SlotReader({"t2m": np.zeros((2, 2, 2))}), ["t2m"], [])
 
 
+def test_un_campo_statico_viene_replicato_non_indicizzato() -> None:
+    """Il difetto restava nascosto finche' gli indici stavano sotto le righe della griglia.
+
+    Con pochi istanti utilizzabili nessuno slot superava la latitudine e il campo statico
+    tornava sbagliato ma senza errore; con lo store completo gli indici la superano.
+    """
+    statico = np.arange(6 * 4, dtype=np.float32).reshape(6, 4)
+    lettore = SlotReader({"t2m": np.zeros((900, 6, 4), dtype=np.float32), "lsm": statico})
+
+    letti = lettore.read_slots([0, 300, 899], ["lsm"])
+
+    assert letti["lsm"].shape == (3, 6, 4)
+    for istante in range(3):
+        assert np.array_equal(letti["lsm"][istante], statico)
+
+
+def test_le_statistiche_di_un_campo_statico_non_dipendono_dagli_istanti() -> None:
+    statico = np.arange(6 * 4, dtype=np.float32).reshape(6, 4)
+    lettore = SlotReader({"t2m": np.zeros((900, 6, 4), dtype=np.float32), "lsm": statico})
+
+    poche = compute_norm_stats(lettore, ["lsm"], [0, 1, 2])
+    lontane = compute_norm_stats(lettore, ["lsm"], [700, 800, 899])
+
+    assert lontane.mean["lsm"] == pytest.approx(poche.mean["lsm"])
+    assert lontane.mean["lsm"] == pytest.approx(float(statico.mean()))
+
+
+def test_il_numero_di_istanti_ignora_i_campi_statici() -> None:
+    """Ordinato prima, un campo statico farebbe dichiarare 6 istanti invece di 900."""
+    lettore = SlotReader(
+        {
+            "lsm": np.zeros((6, 4), dtype=np.float32),
+            "t2m": np.zeros((900, 6, 4), dtype=np.float32),
+        }
+    )
+    assert lettore.n_slots == 900
+
+
 def test_le_statistiche_fanno_andata_e_ritorno_su_tabella() -> None:
     valori = np.random.default_rng(0).normal(size=(4, 3, 3)).astype(np.float32)
     stats = compute_norm_stats(SlotReader({"tp": valori}), ["tp"], list(range(4)))

@@ -433,8 +433,13 @@ class SlotReader:
 
     @property
     def n_slots(self) -> int:
-        primo = next(iter(self._arrays.values()))
-        return int(primo.shape[0])
+        for array in self._arrays.values():
+            if array.ndim == 3:
+                return int(array.shape[0])
+        raise FeatureError(
+            "Nessuna variabile con asse degli istanti: il lettore contiene solo "
+            "campi statici e non puo' dire quanti istanti esistano"
+        )
 
     def read_slots(
         self, slot_indices: Sequence[int], variables: Iterable[str]
@@ -453,10 +458,22 @@ class SlotReader:
                     f"Variabile assente dallo store: {nome!r}. "
                     f"Disponibili: {sorted(self._arrays)}"
                 )
-            letti[nome] = to_working_units(
-                nome, np.asarray(self._arrays[nome][indici], dtype=np.float32)
-            )
+            letti[nome] = to_working_units(nome, self._estrai(nome, indici))
         return letti
+
+    def _estrai(self, nome: str, indici: np.ndarray) -> np.ndarray:
+        """Riporta la variabile sull'asse degli istanti richiesto.
+
+        Un campo statico e' memorizzato come (lat, lon) e non ha l'asse degli istanti:
+        indicizzarlo con uno slot restituirebbe una riga della griglia invece del campo,
+        in silenzio finche' l'indice resta sotto il numero di righe. Va replicato, non
+        indicizzato, cosi' chi legge ottiene sempre la stessa prima dimensione.
+        """
+        dato = self._arrays[nome]
+        if dato.ndim == 2:
+            campo = np.asarray(dato, dtype=np.float32)
+            return np.broadcast_to(campo, (len(indici), *campo.shape))
+        return np.asarray(dato[indici], dtype=np.float32)
 
 
 def wind_speed(u_component: np.ndarray, v_component: np.ndarray) -> np.ndarray:
