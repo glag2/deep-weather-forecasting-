@@ -399,6 +399,37 @@ class ModelConfig(_Base):
     occurrence_anchor_logit: Annotated[float, Field(ge=0.0, le=4.0)] = 0.0
     # Nome della variante di blocco da usare nel corpo della rete.
     variant: str = "conv"
+    # Quale architettura costruire. `unet` e' lo scheletro a U convoluzionale, dove
+    # `variant` sceglie il blocco; `global` e' la rete rivale, che sostituisce il
+    # ragionamento locale con attenzione fra tutti i token di una griglia grossolana.
+    # Convivono perche' il confronto va misurato: il campo recettivo *efficace* della
+    # rete a U, misurato sul modello addestrato, concentra meta' dell'influenza su una
+    # previsione entro 130 km, mentre a tre giorni l'informazione che conta parte da
+    # 1500-3000 km.
+    architecture: Literal["unet", "global"] = "unet"
+    # Parametri della sola architettura `global`. Il costo dell'attenzione cresce col
+    # quadrato del numero di token, quindi cala con la quarta potenza di `patch`:
+    # dimezzare `patch` costa sedici volte tanto.
+    patch: Annotated[int, Field(ge=2, le=32)] = 8
+    embed_channels: Annotated[int, Field(ge=32, le=1024)] = 192
+    global_blocks: Annotated[int, Field(ge=1, le=12)] = 4
+    heads: Annotated[int, Field(ge=1, le=16)] = 4
+
+    @model_validator(mode="after")
+    def _nucleo_globale_coerente(self) -> Self:
+        """Un valore incoerente fallirebbe altrimenti solo alla costruzione della rete.
+
+        A quel punto dati e finestre sono gia' stati preparati, quindi l'errore arriva
+        dopo minuti di lavoro e senza dire quale dei due numeri sia quello sbagliato.
+        """
+        if self.embed_channels % self.heads:
+            raise ValueError(
+                f"model.embed_channels ({self.embed_channels}) deve essere divisibile "
+                f"per model.heads ({self.heads})"
+            )
+        if self.patch & (self.patch - 1):
+            raise ValueError(f"model.patch deve essere una potenza di due: {self.patch}")
+        return self
 
     @field_validator("variant")
     @classmethod

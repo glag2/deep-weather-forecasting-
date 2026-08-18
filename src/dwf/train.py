@@ -31,6 +31,7 @@ from dwf.data.dataset import (
     split_baselines,
 )
 from dwf.data.features import InputLayout, NormStats, SlotReader, compute_norm_stats
+from dwf.models.global_network import GlobalContextNet, GlobalNetworkSpec
 from dwf.models.heads import OutputLayout
 from dwf.models.losses import CompositeLoss
 from dwf.models.network import DeepWeatherNet, NetworkSpec
@@ -71,7 +72,28 @@ def fold_dir(config: Config, fold: int) -> Path:
     return config.fold_dir(fold)
 
 
-def build_network(config: Config, layout: OutputLayout, in_channels: int) -> DeepWeatherNet:
+def build_network(
+    config: Config, layout: OutputLayout, in_channels: int
+) -> DeepWeatherNet | GlobalContextNet:
+    """Costruisce l'architettura scelta in configurazione.
+
+    Le due architetture non sono una l'evoluzione dell'altra: ricevono gli stessi
+    canali, producono lo stesso layout di uscita e si addestrano con la stessa perdita,
+    quindi sono confrontabili. La scelta sta in `model.architecture`.
+    """
+    if config.model.architecture == "global":
+        return GlobalContextNet(
+            GlobalNetworkSpec(
+                in_channels=in_channels,
+                base_channels=config.model.base_channels,
+                patch=config.model.patch,
+                embed_channels=config.model.embed_channels,
+                blocks=config.model.global_blocks,
+                heads=config.model.heads,
+                dropout=config.model.dropout,
+            ),
+            layout,
+        )
     return DeepWeatherNet(
         NetworkSpec(
             in_channels=in_channels,
