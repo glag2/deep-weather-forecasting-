@@ -22,13 +22,16 @@ from dwf.dashboard import (
     accuratezze_ingannevoli,
     copertura_mensile,
     curva_apprendimento,
+    guadagno_leggibile,
     informazioni_modello,
     metriche,
     panoramica,
     per_scadenza,
+    riepilogo_leggibile,
     riepilogo_metriche,
     risorse,
     spazio_dati,
+    stato_progetto,
     struttura_fold,
 )
 from dwf.tables import METRICS, SLOTS, cast_to_schema
@@ -518,3 +521,152 @@ def test_il_guadagno_su_una_tabella_vuota_non_rompe_la_pagina() -> None:
 
     assert esito.height == 0
     assert "guadagno_percento" in esito.columns
+
+
+# --------------------------------------------------------------------------- #
+# Etichette leggibili
+# --------------------------------------------------------------------------- #
+
+
+class TestEtichette:
+    """Nessuna tabella deve arrivare a schermo con i nomi tecnici delle colonne."""
+
+    def test_la_scadenza_diventa_giorno_e_ora(self, config: Config) -> None:
+        """Gli slot non sono equidistanti: tradurli in ore di anticipo sarebbe falso."""
+        from dwf.dashboard import etichetta_scadenza
+
+        assert config.time.slot_hours == [6, 12, 18]
+        assert etichetta_scadenza(config, 0) == "giorno 1, ore 06 UTC"
+        assert etichetta_scadenza(config, 2) == "giorno 1, ore 18 UTC"
+        assert etichetta_scadenza(config, 3) == "giorno 2, ore 06 UTC"
+        assert etichetta_scadenza(config, 8) == "giorno 3, ore 18 UTC"
+
+    def test_il_riepilogo_leggibile_traduce_intestazioni_e_valori(
+        self, config: Config
+    ) -> None:
+        config.fold_dir(0).mkdir(parents=True, exist_ok=True)
+        cast_to_schema(
+            pl.DataFrame(
+                [
+                    {
+                        "model": "persistence_diurnal", "split": "test", "fold": 0,
+                        "variable": "t2m", "lead_slot": -1, "month": -1,
+                        "metric": "rmse_celsius", "value": 3.1597, "n_values": 138816,
+                    }
+                ]
+            ),
+            METRICS,
+        ).write_parquet(METRICS.path(config.fold_dir(0)))
+
+        tabella = metriche(config, 0, "test")
+        assert tabella is not None
+        leggibile = riepilogo_leggibile(tabella)
+
+        assert leggibile.columns == [
+            "Modello", "Grandezza", "Metrica", "Valore", "Punti confrontati",
+        ]
+        riga = leggibile.row(0, named=True)
+        assert riga["Modello"] == "Persistenza diurna"
+        assert riga["Grandezza"] == "Temperatura a 2 m"
+        assert "degC" in riga["Metrica"]
+
+    def test_il_guadagno_leggibile_nomina_le_scadenze(self, config: Config) -> None:
+        tabella = pl.DataFrame(
+            {
+                "model": ["dwf", "persistence_diurnal"],
+                "variable": ["t2m"] * 2,
+                "metric": ["rmse_celsius"] * 2,
+                "month": [-1, -1],
+                "lead_slot": [2, 2],
+                "value": [2.27, 2.40],
+            }
+        )
+
+        leggibile = guadagno_leggibile(config, tabella, "t2m", "rmse_celsius")
+
+        assert leggibile.columns == [
+            "Scadenza", "Modello", "Migliore persistenza", "Guadagno (%)",
+        ]
+        riga = leggibile.row(0, named=True)
+        assert riga["Scadenza"] == "giorno 1, ore 18 UTC"
+        assert riga["Guadagno (%)"] == pytest.approx(5.4, abs=0.1)
+
+    def test_il_guadagno_leggibile_regge_una_tabella_vuota(self, config: Config) -> None:
+        vuota = pl.DataFrame(
+            schema={
+                "model": pl.Utf8, "variable": pl.Utf8, "metric": pl.Utf8,
+                "month": pl.Int16, "lead_slot": pl.Int16, "value": pl.Float64,
+            }
+        )
+
+        leggibile = guadagno_leggibile(config, vuota, "t2m", "rmse_celsius")
+
+        assert leggibile.height == 0
+        assert "Guadagno (%)" in leggibile.columns
+
+
+# --------------------------------------------------------------------------- #
+# Stato d'insieme
+# --------------------------------------------------------------------------- #
+
+
+class TestStatoProgetto:
+    """La pagina iniziale deve dire lo stato reale anche quando non c'e' nulla."""
+
+    def test_su_un_progetto_vuoto_non_inventa_numeri(self, config: Config) -> None:
+        stato = stato_progetto(config, 0)
+        assert stato.slot_presenti == 0
+        assert stato.slot_catalogati == 0
+        assert stato.frazione_ingerita == 0.0
+        assert stato.ultimo_dato is None
+        assert stato.checkpoint is False
+        assert stato.problemi == ()
+        assert stato.guadagno_percento is None
+
+    def test_conta_gli_slot_presenti_non_quelli_catalogati(self, config: Config) -> None:
+        _scrivi_slots(
+            config,
+            [
+                _slot(0, datetime(2024, 1, 1, 6, tzinfo=UTC), usable=True),
+                _slot(1, datetime(2024, 1, 1, 12, tzinfo=UTC), usable=True),
+                _slot(2, datetime(2026, 8, 11, 18, tzinfo=UTC), usable=False),
+            ],
+        )
+        stato = stato_progetto(config, 0)
+        assert (stato.slot_presenti, stato.slot_catalogati) == (2, 3)
+        assert stato.frazione_ingerita == pytest.approx(2 / 3)
+        assert stato.ultimo_dato is not None
+        assert stato.ultimo_dato.year == 2024
+
+    def test_misura_il_guadagno_alla_scadenza_di_ventiquattro_ore(
+        self, config: Config
+    ) -> None:
+        """L'errore assoluto da solo e' fuorviante: quel valore si ottiene senza modello."""
+        config.fold_dir(0).mkdir(parents=True, exist_ok=True)
+        righe = [
+            {
+                "model": modello, "split": "test", "fold": 0, "variable": "t2m",
+                "lead_slot": scadenza, "month": -1, "metric": "rmse_celsius",
+                "value": valore, "n_values": 100,
+            }
+            for scadenza, (modello, valore) in [
+                (0, ("dwf", 1.87)), (0, ("persistence_diurnal", 2.43)),
+                (2, ("dwf", 2.27)), (2, ("persistence_diurnal", 2.40)),
+            ]
+        ]
+        cast_to_schema(pl.DataFrame(righe), METRICS).write_parquet(
+            METRICS.path(config.fold_dir(0))
+        )
+
+        stato = stato_progetto(config, 0)
+
+        assert stato.scadenza == 2
+        assert stato.errore_modello == pytest.approx(2.27)
+        assert stato.errore_riferimento == pytest.approx(2.40)
+        assert stato.guadagno_percento == pytest.approx(5.42, abs=0.02)
+
+    def test_riporta_i_problemi_di_coerenza_del_checkpoint(self, config: Config) -> None:
+        _scrivi_modello(config, 0, canali=999, epoca=0, epoche_storia=1)
+        stato = stato_progetto(config, 0)
+        assert stato.checkpoint is True
+        assert any("999 canali" in problema for problema in stato.problemi)

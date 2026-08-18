@@ -909,17 +909,207 @@ def ispeziona_uscite(
     return pl.DataFrame(righe)
 
 
+# --------------------------------------------------------------------------- #
+# Etichette leggibili
+# --------------------------------------------------------------------------- #
+
+# Le tabelle prodotte dalla valutazione usano i nomi tecnici delle colonne, che sono
+# quelli giusti su disco e i peggiori possibili a schermo: `rmse_celsius` non dice
+# l'unita' e `sf` non dice che si tratta di neve. Le corrispondenze stanno qui perche'
+# l'interfaccia possa tradurre senza inventare.
+
+NOMI_MODELLI: dict[str, str] = {
+    "dwf": "DWF (la rete)",
+    "persistence_diurnal": "Persistenza diurna",
+    "persistence": "Persistenza ingenua",
+}
+
+NOMI_VARIABILI: dict[str, str] = {
+    "t2m": "Temperatura a 2 m",
+    "tp": "Precipitazione",
+    "sf": "Neve",
+}
+
+# La stessa colonna `value` contiene gradi, probabilita' e frazioni: senza l'unita'
+# accanto al nome i numeri non sono confrontabili a vista.
+NOMI_METRICHE: dict[str, str] = {
+    "rmse_celsius": "Errore quadratico medio (degC)",
+    "mae_celsius": "Errore assoluto medio (degC)",
+    "brier": "Punteggio di Brier (0 = perfetto)",
+    "brier_skill_score": "Guadagno di Brier sul riferimento (1 = perfetto)",
+    "calibration_error": "Errore di calibrazione (0 = perfetto)",
+    "f1": "F1 (0-1, piu' alto e' meglio)",
+    "precision": "Precisione (0-1)",
+    "recall": "Richiamo (0-1)",
+    "accuracy": "Accuratezza (0-1, da leggere con la frequenza)",
+    "base_rate": "Frequenza dell'evento (0-1)",
+    "decision_threshold": "Soglia di decisione",
+}
+
+NOMI_BLOCCHI: dict[str, str] = {
+    "train": "Addestramento",
+    "val": "Validazione",
+    "test": "Test",
+}
+
+NOMI_GRUPPI_CANALI: dict[str, str] = {
+    "state": "Stato della variabile",
+    "tendency": "Tendenza fra due istanti",
+    "static": "Campo statico",
+    "time": "Coordinata temporale",
+    "wind_speed": "Intensita' del vento",
+    "latitude": "Latitudine",
+}
+
+
+def etichetta_scadenza(config: Config, scadenza: int) -> str:
+    """Scadenza scritta come giorno e ora UTC invece che come numero di slot.
+
+    Gli slot non sono equidistanti (06, 12, 18 UTC), quindi tradurli in ore di anticipo
+    darebbe un passo che cambia dentro la giornata: il giorno e l'ora sono esatti.
+    """
+    ore = config.time.slot_hours
+    if not ore:
+        return f"slot {scadenza}"
+    return f"giorno {scadenza // len(ore) + 1}, ore {ore[scadenza % len(ore)]:02d} UTC"
+
+
+def riepilogo_leggibile(tabella: pl.DataFrame) -> pl.DataFrame:
+    """Il riepilogo delle metriche con intestazioni in italiano e unita' esplicite."""
+    return riepilogo_metriche(tabella).select(
+        pl.col("model").replace(NOMI_MODELLI).alias("Modello"),
+        pl.col("variable").replace(NOMI_VARIABILI).alias("Grandezza"),
+        pl.col("metric").replace(NOMI_METRICHE).alias("Metrica"),
+        pl.col("value").round(4).alias("Valore"),
+        pl.col("n_values").alias("Punti confrontati"),
+    )
+
+
+def guadagno_leggibile(
+    config: Config, tabella: pl.DataFrame, variabile: str, metrica: str
+) -> pl.DataFrame:
+    """Il guadagno sulla persistenza con la scadenza scritta in chiaro."""
+    guadagno = guadagno_su_persistenza(tabella, variabile, metrica)
+    if guadagno.is_empty():
+        return pl.DataFrame(
+            schema={
+                "Scadenza": pl.Utf8,
+                "Modello": pl.Float64,
+                "Migliore persistenza": pl.Float64,
+                "Guadagno (%)": pl.Float64,
+            }
+        )
+    etichette = [
+        etichetta_scadenza(config, int(valore)) for valore in guadagno["lead_slot"]
+    ]
+    return guadagno.select(
+        pl.Series("Scadenza", etichette),
+        pl.col("modello").round(3).alias("Modello"),
+        pl.col("riferimento").round(3).alias("Migliore persistenza"),
+        pl.col("guadagno_percento").round(1).alias("Guadagno (%)"),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Stato d'insieme
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True, slots=True)
+class StatoProgetto:
+    """I pochi numeri che rispondono a "come sta il progetto adesso"."""
+
+    slot_presenti: int
+    slot_catalogati: int
+    ultimo_dato: datetime | None
+    checkpoint: bool
+    problemi: tuple[str, ...]
+    scadenza: int
+    errore_modello: float | None
+    errore_riferimento: float | None
+    guadagno_percento: float | None
+
+    @property
+    def frazione_ingerita(self) -> float:
+        if not self.slot_catalogati:
+            return 0.0
+        return self.slot_presenti / self.slot_catalogati
+
+
+def stato_progetto(
+    config: Config, fold: int = 0, *, split: str = "test"
+) -> StatoProgetto:
+    """Stato reale del progetto: dati ingeriti, checkpoint e guadagno a ventiquattro ore.
+
+    Il numero che conta e' il guadagno sulla **migliore** persistenza, non l'errore
+    assoluto: a ventiquattro ore l'errore che si vede si ottiene gia' ripetendo
+    l'osservazione di ieri alla stessa ora, quindi da solo non dice se il modello serve.
+
+    La scadenza scelta e' l'ultimo slot del primo giorno di previsione, cioe' le
+    ventiquattro ore piene rispetto all'inizio della finestra bersaglio.
+    """
+    slots = _leggi(SLOTS, config.tables_dir)
+    presenti = 0
+    catalogati = 0
+    ultimo: datetime | None = None
+    if slots is not None and slots.height:
+        catalogati = slots.height
+        utilizzabili = slots.filter(pl.col("usable"))
+        presenti = utilizzabili.height
+        if presenti:
+            ultimo = utilizzabili["valid_time"].max()
+
+    checkpoint = (config.fold_dir(fold) / "weights.npz").exists()
+    problemi = tuple(coerenza_artefatti(config, fold)) if checkpoint else ()
+
+    scadenza = max(len(config.time.slot_hours) - 1, 0)
+    errore_modello: float | None = None
+    errore_riferimento: float | None = None
+    guadagno: float | None = None
+
+    tabella = metriche(config, fold, split)
+    if tabella is not None:
+        righe = guadagno_su_persistenza(tabella, "t2m", "rmse_celsius").filter(
+            pl.col("lead_slot") == scadenza
+        )
+        if righe.height:
+            riga = righe.row(0, named=True)
+            errore_modello = riga["modello"]
+            errore_riferimento = riga["riferimento"]
+            guadagno = riga["guadagno_percento"]
+
+    return StatoProgetto(
+        slot_presenti=presenti,
+        slot_catalogati=catalogati,
+        ultimo_dato=ultimo,
+        checkpoint=checkpoint,
+        problemi=problemi,
+        scadenza=scadenza,
+        errore_modello=errore_modello,
+        errore_riferimento=errore_riferimento,
+        guadagno_percento=guadagno,
+    )
+
+
 __all__ = [
+    "NOMI_BLOCCHI",
+    "NOMI_GRUPPI_CANALI",
+    "NOMI_METRICHE",
+    "NOMI_MODELLI",
+    "NOMI_VARIABILI",
     "TECNOLOGIE",
     "CanaleIspezionato",
     "Confronto",
     "DashboardError",
     "Riquadro",
+    "StatoProgetto",
     "accuratezze_ingannevoli",
     "catalogo_ingressi",
     "confronto_visivo",
     "copertura_mensile",
     "curva_apprendimento",
+    "etichetta_scadenza",
+    "guadagno_leggibile",
     "guadagno_su_persistenza",
     "informazioni_modello",
     "ispeziona_ingresso",
@@ -928,8 +1118,10 @@ __all__ = [
     "metriche",
     "panoramica",
     "per_scadenza",
+    "riepilogo_leggibile",
     "riepilogo_metriche",
     "risorse",
     "spazio_dati",
+    "stato_progetto",
     "struttura_fold",
 ]
