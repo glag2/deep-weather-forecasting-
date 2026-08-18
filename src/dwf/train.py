@@ -1,4 +1,4 @@
-"""Addestramento di un fold della validazione a finestra mobile.
+﻿"""Addestramento di un fold della validazione a finestra mobile.
 
 Ogni fold e' un esperimento indipendente: le statistiche di normalizzazione si
 calcolano **solo** sui suoi slot di train, il modello riparte da zero e il checkpoint
@@ -14,7 +14,7 @@ import math
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import torch
@@ -452,10 +452,51 @@ def train_fold(
     )
 
 
+def verifica_piano_dei_canali(
+    metadati: dict[str, Any], input_layout: InputLayout
+) -> None:
+    """Confronta i nomi dei canali salvati con quelli che la configurazione produce.
+
+    I checkpoint piu' vecchi non registrano il piano: in quel caso non si puo' verificare
+    nulla e non si finge il contrario, si passa oltre. Con il piano presente, la prima
+    differenza ferma il caricamento e viene detta per nome, perche' "canale 137 diverso"
+    non aiuta nessuno.
+    """
+    salvati = metadati.get("channels")
+    if not salvati:
+        return
+
+    attesi = [canale.name for canale in input_layout.channels]
+    trovati = [str(voce["name"]) for voce in salvati]
+    if trovati == attesi:
+        return
+
+    differenze = [
+        f"posizione {indice}: il checkpoint ha {trovato!r}, la configurazione {atteso!r}"
+        for indice, (trovato, atteso) in enumerate(zip(trovati, attesi, strict=False))
+        if trovato != atteso
+    ]
+    if not differenze:
+        differenze = [
+            f"il checkpoint elenca {len(trovati)} canali, la configurazione {len(attesi)}"
+        ]
+    raise TrainingError(
+        "Il piano dei canali del checkpoint non corrisponde alla configurazione. "
+        + differenze[0]
+        + (f" (e altre {len(differenze) - 1} differenze)" if len(differenze) > 1 else "")
+    )
+
+
 def load_checkpoint(
     config: Config, fold: int
 ) -> tuple[DeepWeatherNet, NormStats, InputLayout, OutputLayout]:
-    """Ricostruisce rete e normalizzazione salvate per un fold."""
+    """Ricostruisce rete e normalizzazione salvate per un fold.
+
+    Il controllo sul solo *numero* di canali non basta: due configurazioni diverse possono
+    produrne quanti ne produce il checkpoint mettendoci dentro grandezze diverse, e in quel
+    caso la rete gira e restituisce numeri plausibili e sbagliati, che e' il guasto peggiore
+    perche' non si annuncia. Per questo si confrontano anche i nomi, uno per uno.
+    """
     from dwf.tables import read_table
 
     destinazione = fold_dir(config, fold)
@@ -472,6 +513,7 @@ def load_checkpoint(
             f"ne produce {input_layout.n_channels}: configurazione e modello non "
             f"corrispondono"
         )
+    verifica_piano_dei_canali(metadati, input_layout)
 
     # I checkpoint scritti prima che esistesse la scelta dell'architettura non hanno la
     # chiave: allora ne esisteva una sola, quindi l'assenza identifica `unet`.

@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from dwf.config import Config
+from dwf.data.features import InputLayout
 from dwf.persistence import (
     METADATA_NAME,
     WEIGHTS_NAME,
@@ -27,6 +29,7 @@ from dwf.persistence import (
     save_model,
     save_weights,
 )
+from dwf.train import TrainingError, verifica_piano_dei_canali
 
 # Percorso che il payload malevolo tenta di creare. Viene impostato dalla fixture e
 # letto dal metodo `__reduce__`, che pickle invoca al momento del caricamento.
@@ -228,3 +231,63 @@ class TestPesiComplessi:
         # Allargare ai complessi non deve aver aperto la porta a pickle.
         with pytest.raises(PersistenceError, match="pickle"):
             save_weights(tmp_path, {"w": np.array([{"codice": "malevolo"}], dtype=object)})
+
+
+class TestCoerenzaConLaConfigurazione:
+    """Un checkpoint compatibile nel numero di canali puo' essere incompatibile nel merito.
+
+    E' il guasto peggiore fra quelli possibili qui, perche' non si annuncia: la rete gira,
+    la previsione esce, e i numeri sono plausibili e sbagliati. Il controllo sul solo
+    conteggio non lo vede.
+    """
+
+    def _piano(self, nomi: list[str]) -> dict[str, object]:
+        return {
+            "in_channels": len(nomi),
+            "channels": [
+                {"channel_index": indice, "name": nome} for indice, nome in enumerate(nomi)
+            ],
+        }
+
+    def _layout(self, tmp_path: Path) -> InputLayout:
+        radice = Path(__file__).resolve().parents[1]
+        return InputLayout.from_config(
+            Config.load(radice / "configs" / "default.yaml", project_root=tmp_path)
+        )
+
+    def test_un_piano_identico_passa(self, tmp_path: Path) -> None:
+        layout = self._layout(tmp_path)
+
+        verifica_piano_dei_canali(
+            self._piano([canale.name for canale in layout.channels]), layout
+        )
+
+    def test_un_canale_diverso_a_pari_conteggio_ferma_il_caricamento(
+        self, tmp_path: Path
+    ) -> None:
+        layout = self._layout(tmp_path)
+        nomi = [canale.name for canale in layout.channels]
+        atteso = nomi[3]
+        nomi[3] = "lake_depth_t-17"
+
+        with pytest.raises(TrainingError, match="posizione 3") as errore:
+            verifica_piano_dei_canali(self._piano(nomi), layout)
+
+        # Il messaggio deve nominare entrambi: "canale 3 diverso" non aiuta nessuno.
+        assert "lake_depth_t-17" in str(errore.value)
+        assert atteso in str(errore.value)
+
+    def test_piu_differenze_vengono_contate(self, tmp_path: Path) -> None:
+        layout = self._layout(tmp_path)
+        nomi = [f"inventato_{indice}" for indice in range(len(layout.channels))]
+
+        with pytest.raises(TrainingError, match="altre 244 differenze"):
+            verifica_piano_dei_canali(self._piano(nomi), layout)
+
+    def test_un_checkpoint_senza_piano_non_viene_respinto(self, tmp_path: Path) -> None:
+        """I checkpoint scritti prima che il piano venisse registrato non sono verificabili.
+
+        Respingerli fingendo un controllo sarebbe peggio: si perderebbero modelli validi
+        per un'informazione che allora non veniva salvata.
+        """
+        verifica_piano_dei_canali({"in_channels": 245}, self._layout(tmp_path))
