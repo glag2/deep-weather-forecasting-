@@ -456,3 +456,65 @@ def test_la_cache_cambia_nome_quando_i_pesi_cambiano(config: Config) -> None:
     dopo = time.time() + 120
     os.utime(pesi, (dopo, dopo))
     assert _percorso_cache(config, 0, "mappa") != primo
+
+
+def test_il_guadagno_sulla_persistenza_usa_il_riferimento_piu_forte() -> None:
+    """Confrontarsi con la persistenza peggiore renderebbe il guadagno adulatorio."""
+    from dwf.dashboard import guadagno_su_persistenza
+
+    tabella = pl.DataFrame(
+        {
+            "model": ["dwf", "persistence", "persistence_diurnal"],
+            "variable": ["t2m"] * 3,
+            "metric": ["rmse_celsius"] * 3,
+            "month": [-1, -1, -1],
+            "lead_slot": [2, 2, 2],
+            "value": [2.0, 4.0, 2.5],
+        }
+    )
+
+    esito = guadagno_su_persistenza(tabella, "t2m", "rmse_celsius")
+
+    assert esito.height == 1
+    riga = esito.row(0, named=True)
+    assert riga["riferimento"] == 2.5
+    assert riga["guadagno_percento"] == pytest.approx(20.0)
+
+
+def test_il_guadagno_e_negativo_se_il_modello_perde() -> None:
+    from dwf.dashboard import guadagno_su_persistenza
+
+    tabella = pl.DataFrame(
+        {
+            "model": ["dwf", "persistence_diurnal"],
+            "variable": ["t2m"] * 2,
+            "metric": ["rmse_celsius"] * 2,
+            "month": [-1, -1],
+            "lead_slot": [0, 0],
+            "value": [3.0, 2.0],
+        }
+    )
+
+    esito = guadagno_su_persistenza(tabella, "t2m", "rmse_celsius")
+
+    assert esito.row(0, named=True)["guadagno_percento"] == pytest.approx(-50.0)
+
+
+def test_il_guadagno_su_una_tabella_vuota_non_rompe_la_pagina() -> None:
+    from dwf.dashboard import guadagno_su_persistenza
+
+    vuota = pl.DataFrame(
+        schema={
+            "model": pl.Utf8,
+            "variable": pl.Utf8,
+            "metric": pl.Utf8,
+            "month": pl.Int16,
+            "lead_slot": pl.Int16,
+            "value": pl.Float64,
+        }
+    )
+
+    esito = guadagno_su_persistenza(vuota, "t2m", "rmse_celsius")
+
+    assert esito.height == 0
+    assert "guadagno_percento" in esito.columns

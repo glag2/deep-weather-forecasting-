@@ -404,6 +404,47 @@ def per_scadenza(tabella: pl.DataFrame, variabile: str, metrica: str) -> pl.Data
     )
 
 
+def guadagno_su_persistenza(
+    tabella: pl.DataFrame, variabile: str, metrica: str
+) -> pl.DataFrame:
+    """Quanto il modello guadagna, scadenza per scadenza, sul non fare nulla.
+
+    L'errore assoluto non dice se il modello serve: a ventiquattro ore 2,40 gradi si
+    ottengono ripetendo ieri alla stessa ora, e un modello che segna 2,27 sta guadagnando
+    il cinque per cento, non facendo previsioni. Il confronto e' contro la **migliore**
+    persistenza a quella scadenza, non contro la media delle persistenze, perche' un
+    riferimento facile da battere renderebbe il guadagno adulatorio.
+    """
+    valori = per_scadenza(tabella, variabile, metrica)
+    if valori.is_empty():
+        return valori.select(
+            pl.col("lead_slot"),
+            pl.lit(None, dtype=pl.Float64).alias("modello"),
+            pl.lit(None, dtype=pl.Float64).alias("riferimento"),
+            pl.lit(None, dtype=pl.Float64).alias("guadagno_percento"),
+        )
+
+    modello = valori.filter(pl.col("model") == "dwf").select(
+        "lead_slot", pl.col("value").alias("modello")
+    )
+    riferimento = (
+        valori.filter(pl.col("model") != "dwf")
+        .group_by("lead_slot")
+        .agg(pl.col("value").min().alias("riferimento"))
+    )
+    return (
+        modello.join(riferimento, on="lead_slot", how="left")
+        .with_columns(
+            (
+                100.0
+                * (pl.col("riferimento") - pl.col("modello"))
+                / pl.col("riferimento")
+            ).alias("guadagno_percento")
+        )
+        .sort("lead_slot")
+    )
+
+
 def accuratezze_ingannevoli(tabella: pl.DataFrame) -> pl.DataFrame:
     """Casi in cui rispondere sempre "no" batterebbe l'accuratezza dichiarata.
 
@@ -884,6 +925,7 @@ __all__ = [
     "ispeziona_uscite",
     "mappa_errori",
     "metriche",
+    "guadagno_su_persistenza",
     "panoramica",
     "per_scadenza",
     "riepilogo_metriche",

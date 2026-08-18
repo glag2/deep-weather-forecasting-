@@ -1,4 +1,4 @@
-"""Dashboard di ispezione del progetto.
+﻿"""Dashboard di ispezione del progetto.
 
 Avvio:
 
@@ -48,6 +48,7 @@ from dwf.dashboard import (  # noqa: E402
     confronto_visivo,
     copertura_mensile,
     curva_apprendimento,
+    guadagno_su_persistenza,
     informazioni_modello,
     ispeziona_ingresso,
     ispeziona_uscite,
@@ -361,6 +362,24 @@ elif sezione == "Prestazioni":
         if andamento.height:
             largo = andamento.pivot(on="model", index="lead_slot", values="value")
             st.line_chart(largo.to_pandas().set_index("lead_slot"), height=320)
+        else:
+            st.info("Nessun valore per questa combinazione.")
+
+        st.subheader("Guadagno sul non fare nulla")
+        st.caption(
+            "L'errore assoluto non dice se il modello serve. Qui c'e' la differenza "
+            "percentuale rispetto alla migliore persistenza a quella scadenza: zero "
+            "significa che ripetere il passato avrebbe dato lo stesso risultato."
+        )
+        guadagno = guadagno_su_persistenza(tabella, variabile, metrica)
+        if guadagno.height:
+            st.dataframe(guadagno.to_pandas(), use_container_width=True)
+            st.bar_chart(
+                guadagno.select("lead_slot", "guadagno_percento")
+                .to_pandas()
+                .set_index("lead_slot"),
+                height=260,
+            )
         else:
             st.info("Nessun valore per questa combinazione.")
 
