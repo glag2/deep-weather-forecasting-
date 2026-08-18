@@ -120,13 +120,18 @@ model:
   # bersaglio, non il valore assoluto. E' l'unica scelta che nel banco esce dal rumore:
   # 6,613 degC senza, 3,625 con.
   anchor_diurnal: true
-  # Lo stesso riferimento, dato anche alla probabilita' di pioggia. Senza, il Brier era
-  # identico alla prima e all'ultima scadenza (0,2422 e 0,2420): il modello prevedeva
-  # la stessa pioggia per tre giorni. Misurato in OCCURRENCE_ANCHOR.md su quattro
-  # ampiezze, con un massimo netto qui: 0,2433 a 0, 0,1907 a 1,1, 0,2032 a 1,8, contro
-  # una dispersione fra semi di 0,0032. Alzarlo oltre peggiora, perche' la persistenza
-  # conta meno via via che la scadenza si allontana.
-  occurrence_anchor_logit: 1.1
+  # Lo stesso riferimento, dato anche alla probabilita' di pioggia. Il meccanismo resta
+  # disponibile ma **spento**, ed e' il caso piu' istruttivo del progetto.
+  # A scala ridotta sembrava una vittoria netta: Brier 0,2433 a ampiezza 0 contro 0,1907
+  # a 1,1, dispersione fra semi 0,0032, massimo interno nella curva, cioe' tutti i segni
+  # di un effetto vero (docs/OCCURRENCE_ANCHOR.md). A piena scala si e' rovesciato:
+  # Brier di test 0,181 senza contro 0,192 con, peggio in otto scadenze su nove.
+  # La spiegazione e' che l'ancoraggio e' una conoscenza a priori, e una conoscenza a
+  # priori vale tanto di piu' quanto meno il modello ha imparato da solo. Un banco da
+  # tre epoche misura chi impara in fretta, quindi premia per costruzione i termini a
+  # priori: era lo strumento sbagliato per questa domanda. Riaccenderlo richiede una
+  # misura a piena scala, non un'altra a scala ridotta.
+  occurrence_anchor_logit: 0.0
 
 training:
   seed: 1234
