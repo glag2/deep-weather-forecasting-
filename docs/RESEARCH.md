@@ -250,22 +250,133 @@ operativi.
 
 ## 7. Idee dai modelli linguistici: cosa si trasferisce e cosa no
 
-DeepSeek-V4 (arXiv:2606.19348) e' stato letto perche' esplicitamente richiesto. La sua
-tesi centrale non ci riguarda, ma due ingredienti secondari si'. Vale la pena separarli,
-perche' e' facile importare un nome invece di un meccanismo.
+### 7.0 Una rettifica, prima di tutto
 
-| Ingrediente | Cosa risolve nel paper | Da noi |
+La prima stesura di questa sezione liquidava CSA e HCA di DeepSeek-V4 con la frase «non
+abbiamo una sequenza lunga: abbiamo una griglia letta in una volta sola». Quel giudizio
+era formulato dentro il vincolo della U-Net, dove non esistono token e la sequenza non e'
+un parametro. Da quando il nucleo della rete e' `GlobalContextNet`, che tokenizza la
+griglia, **la lunghezza della sequenza e' una nostra scelta di progetto**: con patch 8 sono
+33x51 = 1683 token, con patch 4 diventano 66x102 = 6732, e le coppie query-chiave passano
+da 2,8 milioni a 45 milioni. La premessa del vecchio giudizio e' caduta, quindi il
+giudizio va rifatto. Resta pero' vero, e va detto con la stessa chiarezza, che **il
+guadagno delle tecniche sparse e' in gran parte di kernel GPU**: MiniMax misura 28,4x di
+FLOPs risparmiati e solo 14,2x di tempo reale su H800. Su CPU, con 1683 token, la sparsita'
+non compra nulla; diventa interessante solo se scendiamo a patch fini.
+
+### 7.1 I meccanismi di DeepSeek-V4, separati dal nome
+
+| Meccanismo | Come funziona davvero | Da noi |
 |---|---|---|
-| CSA e HCA, attenzione compressa e sparsa | Il costo quadratico dell'attenzione su un milione di token | **Non si applica.** Non abbiamo una sequenza lunga: abbiamo una griglia 261x401 letta in una volta sola. Il collo di bottiglia che quelle tecniche rimuovono qui non esiste |
-| mHC, connessioni residue su varieta' vincolata | Un flusso residuo piu' espressivo: si allarga fra i blocchi e si restringe prima di ciascuno | **Si applica.** E' indipendente dall'attenzione e vale per qualunque rete residua, U-Net convoluzionale compresa. Candidato vero per il confronto fra architetture |
-| Ottimizzatore Muon | Addestramento piu' efficiente a parita' di passi | **Si applica**, ed e' la prova piu' economica: cambia l'ottimizzatore, non la rete |
-| Previsione multi-token | Emettere piu' passi futuri in una volta | **Gia' fatto**, per costruzione: usciamo con tutte e nove le scadenze insieme |
-| Post-addestramento in due fasi con rinforzo | Allineamento e ragionamento | Non si applica: non c'e' preferenza umana da allineare, c'e' un'osservazione da colpire |
+| **CSA**, attenzione compressa e sparsa | I KV di ogni gruppo di *m* token vengono fusi in uno con un pooling pesato da softmax e bias posizionali appresi (sequenza / m); poi un *lightning indexer* con query a rango basso e punteggi ReLU seleziona i top-k blocchi; MQA a KV condivise, proiezione d'uscita raggruppata | Applicabile **solo a patch fini**. A patch 8 l'attenzione densa costa meno del macchinario di selezione |
+| **HCA**, attenzione molto compressa | Stesso pooling con *m* molto maggiore, ma densa sull'insieme compresso: nessuna sparsita' | Trasferibile subito e a basso costo: un secondo ramo con token grossi da' un contesto quasi globale a prezzo trascurabile |
+| Ramo a finestra scorrevole | I primi due strati sono solo finestra locale (n_win = 128), poi CSA/HCA alternate | Da noi il ramo locale esiste gia' (branca convoluzionale a piena risoluzione), quindi la struttura e' la stessa per altra via |
+| **Attention sink** | Un logit appreso aggiunto al denominatore del softmax, cosi' una testa puo' non attendere quasi nulla | Trasferibile e quasi gratuito: una testa che non ha nulla da dire smette di forzare una distribuzione |
+| **mHC**, iper-connessioni | Flusso residuo allargato n_hc volte; la matrice B e' proiettata su matrici doppiamente stocastiche con 20 iterazioni di Sinkhorn-Knopp, A e C limitate da sigmoide, parte statica + dinamica con gate a inizializzazione piccola | Applicabile a qualunque rete residua, U-Net compresa. Da misurare, non da assumere |
+| **Muon** | Momento con Nesterov, ortogonalizzazione ibrida Newton-Schulz, riscalatura per sqrt(max(n,m))·gamma, weight decay disaccoppiato; AdamW resta su embedding, testa di uscita, pesi RMSNorm e bias/gate statici di mHC | E' la prova piu' economica che abbiamo: attacca il collo di bottiglia misurato, cioe' i passi |
+| Previsione multi-token | Emettere piu' passi futuri insieme | **Gia' fatto** per costruzione: usciamo con tutte e nove le scadenze |
+| Post-addestramento con rinforzo | Allineamento e ragionamento | Non si applica: non c'e' preferenza umana da allineare, c'e' un'osservazione da colpire |
 
-La conclusione onesta e' che il titolo del paper, l'attenzione, e' la parte meno
-trasferibile, e le parti trasferibili non hanno nulla a che vedere con la meteorologia:
-sono un modo di collegare i blocchi e un modo di aggiornare i pesi. Vanno quindi
-misurate sul nostro banco come qualunque altra variante, senza credito d'ingresso.
+### 7.2 Che cosa e' uscito dopo, e che cosa cambia per noi
+
+DeepSeek-V4 e' di fine aprile 2026: da allora la letteratura si e' mossa. Questi sono i
+lavori letti, con l'unica domanda che conta: cosa si trasferisce a una griglia 261x401
+addestrata su una CPU a 4 thread.
+
+**MiniMax Sparse Attention** (arXiv:2606.13392, giugno 2026) e' la versione piu' semplice e
+piu' istruttiva della stessa idea: un *index branch* leggero calcola punteggi token-token,
+li aggrega per blocco con un max-pool, sceglie i top-k blocchi (k = 16, blocchi da 128) e
+il ramo principale fa attenzione **esatta** solo su quelli. Tre dettagli valgono
+indipendentemente dalla scala, e sono quelli che ci servirebbero davvero:
+
+1. **Il gradiente dell'indice va staccato.** Lasciando fluire la perdita ausiliaria
+   dell'indexer nel corpo della rete si ottengono picchi di norma del gradiente e
+   peggioramento sui contesti brevi, perche' la rete impara a semplificare l'attenzione per
+   accontentare l'indice. Con `stopgrad` sull'ingresso dell'indexer il problema sparisce.
+2. **La selezione si allena con una KL ausiliaria** verso la distribuzione di attenzione
+   del ramo principale, e con un riscaldamento in cui all'inizio entrambi i rami sono
+   densi.
+3. **Il blocco locale va sempre incluso a forza**, e la dimensione del blocco fra 32 e 128
+   e' irrilevante per la qualita': si sceglie la piu' comoda.
+
+**CMuon** (arXiv:2608.02502, agosto 2026) e' il lavoro piu' direttamente utile, perche' e'
+Muon applicato a un Diffusion Transformer, cioe' a una rete di visione con blocchi di
+attenzione, non a un modello linguistico. La sua tesi: applicare Muon a matrici **fuse**
+(QKV in un unico tensore, gate+up dell'MLP, modulazione AdaLN) crea *interferenza di
+sottospazi*, perche' l'ortogonalizzazione costruisce un solo precondizionatore
+(G^T G)^-1/2 per blocchi con statistiche di gradiente diverse. La correzione e' banale:
+spezzare la matrice fusa nei suoi sotto-blocchi funzionali **prima** di Newton-Schulz. Su
+un DiT da 675M questo porta a 2x su AdamW e, soprattutto, mantiene il vantaggio anche a
+fine addestramento, dove Muon puro si appiattisce.
+
+Ci riguarda direttamente perche' `GlobalBlock` usa `nn.MultiheadAttention`, che ha il
+**QKV fuso in un unico tensore `in_proj_weight`**: se adottiamo Muon senza spezzarlo,
+cadiamo esattamente nel caso che il paper documenta come dannoso. Il paper fornisce anche i
+numeri operativi: coefficienti quintici di Newton-Schulz 3,4445 / -4,7750 / 2,0315,
+normalizzazione di Frobenius iniziale, trasposizione se m > n, riscalatura
+0,2·sqrt(max(d_out, d_in)) scelta perche' rende la RMS dell'aggiornamento pari a ~0,2,
+cioe' quella tipica di AdamW, e AdamW mantenuto su embedding e proiezioni finali.
+Avvertenza onesta: quei risultati sono a 675M parametri e lotto 1024; noi abbiamo 1,9M
+parametri e lotto 4, e le iterazioni di Newton-Schulz su CPU costano. Va misurato.
+
+Il resto della famiglia Muon serve a non essere ingenui: *Delving into Muon and Beyond*
+(arXiv:2602.04669) e *The Newton-Muon Optimizer* (arXiv:2604.01472) raffinano l'operatore di
+ortogonalizzazione, mentre *To Use or not to Use Muon* (arXiv:2603.00742) mostra che il
+vantaggio dipende dal bias di semplicita' del problema e **non e' universale**. Nessun
+credito d'ingresso, quindi: si adotta se vince sul nostro banco.
+
+**Descrittori di superficie** (arXiv:2607.02824, MET Norway, luglio 2026) e' il paper piu'
+importante di tutti per il nostro difetto misurato, e non parla ne' di attenzione ne' di
+ottimizzatori. Aggiungendo descrittori di superficie all'ingresso di un modello data-driven
+a 2,5 km: **-1,9% di errore sulla temperatura a 2 metri** su tutto il dominio, **-12% di
+MAE sulle aree urbane** grazie alla sola frazione urbana, con gli errori maggiori
+concentrati su montagna e coste. Introducono due famiglie di ingressi:
+
+- *descrittori di superficie* dal modello di suolo: frazione di foresta, altezza degli
+  alberi, argilla, sabbia, ghiacciaio, natura, mare, citta', acque interne, quota massima /
+  minima / silhouette del sottogriglia, anisotropia dell'orografia, pendenze x e y;
+- *indici topografici di vicinato* (nucleo da 12,5 km, cioe' 5 punti di griglia): deviazione
+  standard della quota, derivate nord-sud ed est-ovest, angolo d'orizzonte, indice di
+  posizione topografica, orientamento della valle.
+
+La motivazione dichiarata degli indici di vicinato e' precisamente il nostro problema:
+*il decoder non collega punti di griglia vicini*, quindi il contesto locale va fornito come
+ingresso invece di essere ricostruito. E i loro numeri di addestramento sono un promemoria
+imbarazzante: 15.000 passi con lotto 16, contro i nostri 2.560 con lotto 4.
+
+Ricaduta pratica immediata: dei loro descrittori noi abbiamo soltanto `lsm` e `z`.
+Deviazione standard della quota, pendenze, indice di posizione topografica, silhouette e
+orientamento della valle si **calcolano da `z` che abbiamo gia'**, a costo di download zero;
+tipo di suolo, vegetazione alta e bassa, indice di area fogliare e i campi di orografia
+sottogriglia sono campi invarianti ERA5 scaricabili. Questa e' la modifica con il rapporto
+effetto/costo piu' alto fra tutte quelle in lista, ed e' la piu' vicina al difetto reale:
+il 5,5% di guadagno sulla persistenza a 24 ore.
+
+**Accoppiamento globale-regionale.** ScaleMixer (arXiv:2603.28173) accoppia un modello
+globale preaddestrato con una rete regionale ad alta risoluzione tramite campionamento
+adattivo delle posizioni chiave e attenzione incrociata fra scale; *From Global to Local*
+(arXiv:2607.03279) fa qualcosa di piu' economico: congela un modello meteo di fondazione e
+addestra solo teste multi-scala leggere **nello spazio latente**, ottenendo un salto di
+risoluzione di due ordini di grandezza senza riaddestrare il corpo, e mostrando che partire
+dal latente batte la super-risoluzione sull'immagine. Anche il paper dei descrittori usa lo
+stesso schema: corpo congelato, secondo decoder addestrato, costo diviso per dieci.
+Conclusione strutturale: **la letteratura del 2026 non addestra reti regionali da zero, le
+innesta su un corpo globale preaddestrato.** Noi le addestriamo da zero su una CPU. Questa
+e' probabilmente la ragione piu' profonda del nostro 5,5%, e non si risolve con un blocco di
+attenzione: richiede pesi preaddestrati (Aurora, Pangu, Anemoi), quindi e' una decisione
+dell'utente, non dell'agente, perche' finora la regola era `timm`/`torchvision` soltanto.
+
+### 7.3 Ordine di attacco, per effetto atteso e non per novita'
+
+1. **Descrittori topografici derivati da `z`** — nessun download, effetto documentato sul
+   difetto che abbiamo, attacca la fisica mancante.
+2. **Muon in versione chunked (CMuon)**, con AdamW su norme e testa d'uscita e QKV spezzato
+   in tre — attacca il collo di bottiglia misurato, i passi.
+3. **Ramo HCA a token grossi + attention sink** — contesto quasi globale a costo
+   trascurabile, senza sparsita' e senza kernel dedicati.
+4. **mHC** — plausibile ma senza prove nel nostro regime.
+5. **CSA con indexer staccato e KL ausiliaria** — solo se e quando passiamo a patch fini,
+   perche' prima non c'e' nulla da risparmiare.
 
 ## 8. Riferimenti
 
@@ -285,3 +396,19 @@ misurate sul nostro banco come qualunque altra variante, senza credito d'ingress
    Windows*. ICCV.
 7. DeepSeek-AI (2026). *DeepSeek-V4: Towards Highly Efficient Million-Token Context
    Intelligence*. arXiv:2606.19348.
+8. Lai, Xu, Yang et al. (2026). *MiniMax Sparse Attention*. arXiv:2606.13392.
+9. Chen, Sun, Yuan (2026). *CMuon: Accelerating and Stabilizing Diffusion Transformer
+   Training via Chunked Momentum Orthogonalization*. arXiv:2608.02502.
+10. Bakketun, Haugen, Blyverket, Nipen, Muller (2026). *Enhancing a high resolution
+    data-driven weather prediction model with surface descriptors*. arXiv:2607.02824.
+11. Chen, Wang, Yuan et al. (2026). *Skillful Kilometer-Scale Regional Weather Forecasting
+    via Global and Regional Coupling* (ScaleMixer). arXiv:2603.28173.
+12. Kamzela, Kubiak, Dobosz et al. (2026). *From Global to Local: Efficient Regional
+    Weather Downscaling with Global Weather Foundation Model*. arXiv:2607.03279.
+13. *Delving into Muon and Beyond: Deep Analysis and Extensions* (2026).
+    arXiv:2602.04669.
+14. *To Use or not to Use Muon: How Simplicity Bias in Optimizers Matters* (2026).
+    arXiv:2603.00742.
+15. *The Newton-Muon Optimizer* (2026). arXiv:2604.01472.
+16. Sun, Li, Zhang et al. (2025). *Efficient Attention Mechanisms for Large Language
+    Models: A Survey*. arXiv:2507.19595.
