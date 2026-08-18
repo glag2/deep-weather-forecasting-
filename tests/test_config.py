@@ -244,6 +244,107 @@ def test_riferimento_a_se_stessa_e_rifiutato(payload: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Livelli di pressione
+# --------------------------------------------------------------------------- #
+
+# Quota, temperatura a due livelli e umidita': la coppia di temperature e' il caso
+# scomodo, perche' nei GRIB condivide la short name `t`.
+PRESSIONE = [
+    {"variable": "geopotential", "level": 500},
+    {"variable": "temperature", "level": 850},
+    {"variable": "temperature", "level": 500},
+    {"variable": "specific_humidity", "level": 700},
+]
+
+
+def test_nessun_livello_di_pressione_per_default() -> None:
+    """Il layout dei canali del checkpoint esistente dipende da questa lista vuota."""
+    config = Config.load(CONFIG_PATH)
+    assert config.variables.pressure == []
+    assert config.variables.pressure_specs == []
+    assert config.variables.dynamic_short_names == [
+        "t2m", "d2m", "msl", "u10", "v10", "tcc", "sd", "tp", "sf"
+    ]
+
+
+def test_due_livelli_della_stessa_variabile_hanno_nomi_distinti(
+    payload: dict[str, Any],
+) -> None:
+    """`temperature` a 500 e a 850 hPa condividono la short name GRIB `t`."""
+    payload["variables"]["pressure"] = PRESSIONE
+    nomi = build(payload).variables.dynamic_short_names
+    assert nomi[-4:] == ["z500", "t850", "t500", "q700"]
+    assert len(nomi) == len(set(nomi))
+
+
+def test_i_livelli_di_pressione_non_spostano_i_canali_esistenti(
+    payload: dict[str, Any],
+) -> None:
+    """In coda: anteporli invaliderebbe ogni checkpoint addestrato prima."""
+    senza = build(payload).variables.dynamic_short_names
+    payload["variables"]["pressure"] = PRESSIONE
+    con = build(payload).variables.dynamic_short_names
+    assert con[: len(senza)] == senza
+
+
+def test_le_variabili_sono_raggruppate_per_livello(payload: dict[str, Any]) -> None:
+    """Il CDS restituisce il prodotto variabili x livelli: un gruppo per livello."""
+    payload["variables"]["pressure"] = PRESSIONE
+    gruppi = build(payload).variables.pressure_by_level()
+    assert list(gruppi) == [500, 700, 850]
+    assert gruppi[500] == ("geopotential", "temperature")
+    assert gruppi[700] == ("specific_humidity",)
+
+
+def test_livello_non_pubblicato_da_era5_e_rifiutato(payload: dict[str, Any]) -> None:
+    """Un livello inesistente fa rifiutare l'intera richiesta dal CDS."""
+    payload["variables"]["pressure"] = [{"variable": "temperature", "level": 512}]
+    with pytest.raises(ValidationError, match="Livello di pressione non pubblicato"):
+        build(payload)
+
+
+def test_variabile_su_livelli_sconosciuta_e_rifiutata(payload: dict[str, Any]) -> None:
+    payload["variables"]["pressure"] = [{"variable": "temperatura_a_caso", "level": 500}]
+    with pytest.raises(ValidationError, match="non registrata"):
+        build(payload)
+
+
+def test_variabile_di_superficie_non_vale_come_livello(payload: dict[str, Any]) -> None:
+    payload["variables"]["pressure"] = [{"variable": "2m_temperature", "level": 500}]
+    with pytest.raises(ValidationError, match="non registrata"):
+        build(payload)
+
+
+def test_coppia_variabile_livello_duplicata_e_rifiutata(payload: dict[str, Any]) -> None:
+    payload["variables"]["pressure"] = [
+        {"variable": "temperature", "level": 850},
+        {"variable": "temperature", "level": 850},
+    ]
+    with pytest.raises(ValidationError, match="pressure contiene duplicati"):
+        build(payload)
+
+
+def test_la_temperatura_in_quota_resta_in_celsius(payload: dict[str, Any]) -> None:
+    """La conversione in lettura vale per ogni temperatura, non solo per quelle a 2 m."""
+    payload["variables"]["pressure"] = PRESSIONE
+    per_nome = {spec.short_name: spec for spec in build(payload).variables.pressure_specs}
+    assert per_nome["t850"].working_units == "degC"
+    assert per_nome["z500"].working_units == "m2 s-2"
+    assert per_nome["q700"].non_negative
+
+
+def test_i_livelli_di_pressione_sopravvivono_al_giro_yaml(
+    payload: dict[str, Any], tmp_path: Path
+) -> None:
+    payload["variables"]["pressure"] = PRESSIONE
+    config = build(payload)
+    target = tmp_path / "con_pressione.yaml"
+    target.write_text(config.to_yaml(), encoding="utf-8")
+    riletta = Config.load(target, project_root=config.project_root)
+    assert riletta.variables.pressure == config.variables.pressure
+
+
+# --------------------------------------------------------------------------- #
 # Finestre, split, training
 # --------------------------------------------------------------------------- #
 

@@ -29,6 +29,7 @@ from dwf.data.ingest import (
     build_catalogue,
     build_folds_table,
     check_grid,
+    check_pressure_level,
     compute_stats,
     dynamic_short_names,
     flatten_accumulated,
@@ -211,6 +212,77 @@ def test_le_variabili_dinamiche_seguono_l_ordine_configurato(config: Config) -> 
     assert nomi[0] == "t2m"
     assert set(nomi) >= {"t2m", "tp", "sf", "sd"}
     assert len(nomi) == len(set(nomi))
+
+
+# --------------------------------------------------------------------------- #
+# Livelli di pressione
+# --------------------------------------------------------------------------- #
+
+PRESSIONE = [
+    {"variable": "geopotential", "level": 500},
+    {"variable": "temperature", "level": 850},
+    {"variable": "temperature", "level": 500},
+    {"variable": "specific_humidity", "level": 700},
+]
+
+
+@pytest.fixture
+def config_pressione(tmp_path: Path) -> Config:
+    payload = Config.load(CONFIG_PATH, project_root=tmp_path).model_dump()
+    payload["variables"]["pressure"] = PRESSIONE
+    return Config.model_validate({**payload, "project_root": tmp_path})
+
+
+def livello(valore: float | list[float] | None, *, nome: str = "isobaricInhPa") -> xr.Dataset:
+    """Dataset minimo con la coordinata del livello, per i soli controlli di coerenza."""
+    dataset = xr.Dataset({"t": (("latitude",), np.zeros(2, dtype=np.float32))})
+    if valore is None:
+        return dataset
+    return dataset.assign_coords({nome: valore})
+
+
+def test_lo_store_riceve_una_variabile_per_livello(config_pressione: Config) -> None:
+    nomi = dynamic_short_names(config_pressione)
+    assert nomi[-4:] == ["z500", "t850", "t500", "q700"]
+    assert len(nomi) == len(set(nomi))
+
+
+def test_il_livello_atteso_passa_il_controllo() -> None:
+    check_pressure_level(livello(500.0), 500, "pressure500_2024-01.grib")
+    check_pressure_level(livello(850.0, nome="level"), 850, "pressure850_2024-01.grib")
+
+
+def test_livello_diverso_da_quello_atteso_e_rifiutato() -> None:
+    """Un file scambiato darebbe valori di un altro livello sotto l'etichetta giusta."""
+    with pytest.raises(IngestError, match="atteso il solo livello 500"):
+        check_pressure_level(livello(850.0), 500, "pressure500_2024-01.grib")
+
+
+def test_file_con_piu_livelli_e_rifiutato() -> None:
+    with pytest.raises(IngestError, match="atteso il solo livello"):
+        check_pressure_level(livello([500.0, 850.0]), 500, "pressure500_2024-01.grib")
+
+
+def test_file_senza_coordinata_di_livello_e_rifiutato() -> None:
+    with pytest.raises(IngestError, match="manca la coordinata del livello"):
+        check_pressure_level(livello(None), 500, "pressure500_2024-01.grib")
+
+
+def test_mesi_disponibili_richiedono_anche_i_file_in_quota(
+    config_pressione: Config,
+) -> None:
+    raw = config_pressione.raw_dir
+    raw.mkdir(parents=True, exist_ok=True)
+    for nome in ("instantaneous_2024-01.grib", "accumulated_2024-01.grib"):
+        (raw / nome).write_bytes(b"x")
+    assert available_months(config_pressione) == []
+    for nome in (
+        "pressure500_2024-01.grib",
+        "pressure700_2024-01.grib",
+        "pressure850_2024-01.grib",
+    ):
+        (raw / nome).write_bytes(b"x")
+    assert available_months(config_pressione) == [(2024, 1)]
 
 
 # --------------------------------------------------------------------------- #

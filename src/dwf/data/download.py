@@ -31,6 +31,10 @@ from dwf.credentials import require_credentials
 
 DATASET = "reanalysis-era5-single-levels"
 
+# Collection distinta per i campi su livelli di pressione: stessa griglia e stessa area,
+# ma la richiesta deve dichiarare `pressure_level`.
+PRESSURE_DATASET = "reanalysis-era5-pressure-levels"
+
 # Anno, mese, giorno e ora usati per i campi invarianti nel tempo: un solo istante
 # basta, e questo e' arbitrario ma fissato per rendere il file riproducibile.
 STATIC_REFERENCE = (2024, 1, 1, 0)
@@ -61,6 +65,9 @@ class DownloadTask:
     # configurato oppure perche' ERA5 non lo ha ancora pubblicato tutto, e chi
     # ispeziona il manifest deve poter sapere quanti giorni copre davvero il file.
     days: tuple[int, ...] = ()
+    # Livello in hPa per i task su livelli di pressione; None per tutti gli altri.
+    # E' anche cio' che seleziona la collection CDS da interrogare.
+    pressure_level: int | None = None
 
     @property
     def label(self) -> str:
@@ -71,6 +78,20 @@ class DownloadTask:
 
 def _hour_strings(hours: Sequence[int]) -> list[str]:
     return [f"{hour:02d}:00" for hour in sorted(hours)]
+
+
+def pressure_kind(level: int) -> str:
+    """Famiglia dei file di un livello di pressione.
+
+    Compare nel nome del file, nel manifest e nei controlli di freschezza, che
+    ricostruiscono il percorso come ``{kind}_{anno}-{mese}.grib``.
+    """
+    return f"pressure{level}"
+
+
+def dataset_for(task: DownloadTask) -> str:
+    """Collection CDS da interrogare per un task."""
+    return PRESSURE_DATASET if task.pressure_level is not None else DATASET
 
 
 def days_to_request(
@@ -145,6 +166,20 @@ def build_tasks(config: Config, *, until: date | None = None) -> list[DownloadTa
                     days=giorni,
                 )
             )
+        for livello, variabili in config.variables.pressure_by_level().items():
+            kind = pressure_kind(livello)
+            tasks.append(
+                DownloadTask(
+                    kind=kind,
+                    variables=variabili,
+                    hours=slot_hours,
+                    year=year,
+                    month=month,
+                    target=raw_dir / f"{kind}_{year:04d}-{month:02d}.grib",
+                    days=giorni,
+                    pressure_level=livello,
+                )
+            )
     return tasks
 
 
@@ -178,6 +213,9 @@ def build_payload(task: DownloadTask, config: Config) -> dict[str, Any]:
         "download_format": "unarchived",
         "area": config.region.cds_area,
     }
+
+    if task.pressure_level is not None:
+        payload["pressure_level"] = [f"{task.pressure_level}"]
 
     # `grid` chiede a MARS di regrigliare lato server. Non e' fra i campi del form
     # web e alcune installazioni del CDS lo rifiutano, quindi lo si invia solo
@@ -250,7 +288,7 @@ def run_task(
     last_error: Exception | None = None
     for attempt in range(1, config.download.max_retries + 1):
         try:
-            client.retrieve(DATASET, payload, str(staging))
+            client.retrieve(dataset_for(task), payload, str(staging))
             if not staging.exists() or staging.stat().st_size == 0:
                 raise RuntimeError("il CDS ha restituito un file vuoto")
             staging.replace(task.target)

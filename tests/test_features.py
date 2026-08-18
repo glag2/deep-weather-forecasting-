@@ -97,6 +97,32 @@ def test_il_conteggio_dei_canali_e_coerente_coi_gruppi(layout: InputLayout) -> N
     assert layout.n_channels == atteso
 
 
+def test_la_configurazione_di_default_conserva_i_245_canali(layout: InputLayout) -> None:
+    """Il checkpoint a piena scala e' addestrato su questo layout esatto."""
+    assert layout.n_channels == 245
+
+
+def test_i_livelli_di_pressione_si_aggiungono_in_coda(config: Config) -> None:
+    """Abilitandoli cambia il numero di canali, ma non l'indice di quelli esistenti."""
+    dati = config.model_dump()
+    dati["variables"]["pressure"] = [
+        {"variable": "geopotential", "level": 500},
+        {"variable": "temperature", "level": 850},
+        {"variable": "temperature", "level": 500},
+        {"variable": "specific_humidity", "level": 700},
+    ]
+    esteso = InputLayout.from_config(Config.model_validate(dati))
+    base = InputLayout.from_config(config)
+    # 4 variabili in piu': uno stato per slot di input e una tendenza per ritardo.
+    per_variabile = base.input_slots + len(base.tendency_lags)
+    assert esteso.n_channels == base.n_channels + 4 * per_variabile
+    assert esteso.dynamic_variables[: len(base.dynamic_variables)] == base.dynamic_variables
+    aggiunti = {canale.source_variable for canale in esteso.channels} - {
+        canale.source_variable for canale in base.channels
+    }
+    assert aggiunti == {"z500", "t850", "t500", "q700"}
+
+
 def test_gli_indici_sono_consecutivi_e_unici(layout: InputLayout) -> None:
     assert [canale.index for canale in layout.channels] == list(range(layout.n_channels))
 

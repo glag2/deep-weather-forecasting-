@@ -147,6 +147,91 @@ if len(BY_CDS_NAME) != len(_SPECS) or len(BY_SHORT_NAME) != len(_SPECS):  # prag
     raise RuntimeError("Registro variabili incoerente: nomi CDS o short name duplicati")
 
 
+# --------------------------------------------------------------------------- #
+# Variabili su livelli di pressione
+# --------------------------------------------------------------------------- #
+
+# Livelli in hPa pubblicati dalla collection `reanalysis-era5-pressure-levels`.
+# Un livello fuori da questo insieme fa rifiutare l'intera richiesta dal CDS.
+ERA5_PRESSURE_LEVELS: tuple[int, ...] = (
+    1, 2, 3, 5, 7, 10, 20, 30, 50, 70,
+    100, 125, 150, 175, 200, 225, 250, 300, 350, 400,
+    450, 500, 550, 600, 650, 700, 750, 775, 800, 825,
+    850, 875, 900, 925, 950, 975, 1000,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PressureVariable:
+    """Metadati comuni a tutti i livelli di una variabile su livelli di pressione.
+
+    Il livello non fa parte di questi metadati: nei GRIB la short name e' la stessa a
+    ogni livello (``t`` vale sia a 500 sia a 850 hPa) e a distinguerli e' la coordinata
+    ``isobaricInhPa``.
+    """
+
+    cds_name: str
+    short_name: str
+    units: str
+    description: str
+    store_offset: float = 0.0
+    non_negative: bool = False
+
+
+_PRESSURE_VARIABLES: tuple[PressureVariable, ...] = (
+    PressureVariable("geopotential", "z", "m2 s-2", "Geopotenziale"),
+    PressureVariable(
+        "temperature", "t", "K", "Temperatura", store_offset=-KELVIN_AT_ZERO_CELSIUS
+    ),
+    PressureVariable(
+        "specific_humidity", "q", "kg kg-1", "Umidita' specifica", non_negative=True
+    ),
+)
+
+PRESSURE_BY_CDS_NAME: dict[str, PressureVariable] = {
+    variable.cds_name: variable for variable in _PRESSURE_VARIABLES
+}
+
+
+def pressure_short_name(short_name: str, level: int) -> str:
+    """Nome interno univoco di una variabile a un livello: ``t`` a 850 hPa da' ``t850``.
+
+    Serve perche' due livelli della stessa variabile condividono la short name GRIB e
+    finirebbero nella stessa colonna dello store.
+    """
+    return f"{short_name}{level}"
+
+
+def _build_pressure_spec(variable: PressureVariable, level: int) -> VariableSpec:
+    return VariableSpec(
+        cds_name=variable.cds_name,
+        short_name=pressure_short_name(variable.short_name, level),
+        kind="instantaneous",
+        units=variable.units,
+        description=f"{variable.description} a {level} hPa",
+        non_negative=variable.non_negative,
+        store_offset=variable.store_offset,
+    )
+
+
+PRESSURE_SPECS: dict[tuple[str, int], VariableSpec] = {
+    (variable.cds_name, level): _build_pressure_spec(variable, level)
+    for variable in _PRESSURE_VARIABLES
+    for level in ERA5_PRESSURE_LEVELS
+}
+
+PRESSURE_BY_SHORT_NAME: dict[str, VariableSpec] = {
+    spec.short_name: spec for spec in PRESSURE_SPECS.values()
+}
+
+_COLLISIONI = sorted(set(PRESSURE_BY_SHORT_NAME) & set(BY_SHORT_NAME))
+if _COLLISIONI:  # pragma: no cover
+    raise RuntimeError(
+        f"Nomi su livelli di pressione in conflitto con le variabili di superficie: "
+        f"{_COLLISIONI}"
+    )
+
+
 def spec_by_cds_name(cds_name: str) -> VariableSpec:
     """Restituisce lo spec di una variabile a partire dal nome CDS."""
     try:
@@ -159,8 +244,37 @@ def spec_by_cds_name(cds_name: str) -> VariableSpec:
 
 
 def spec_by_short_name(short_name: str) -> VariableSpec:
-    """Restituisce lo spec di una variabile a partire dalla short name GRIB."""
+    """Restituisce lo spec di una variabile dal nome interno usato nello store.
+
+    Accetta sia le short name GRIB dei campi di superficie sia i nomi con livello dei
+    campi su livelli di pressione (``t850``), che nello store sono variabili distinte.
+    """
+    spec = BY_SHORT_NAME.get(short_name) or PRESSURE_BY_SHORT_NAME.get(short_name)
+    if spec is None:
+        raise KeyError(f"Short name GRIB non registrata: {short_name!r}")
+    return spec
+
+
+def pressure_variable(cds_name: str) -> PressureVariable:
+    """Metadati della variabile su livelli di pressione, indipendenti dal livello."""
     try:
-        return BY_SHORT_NAME[short_name]
+        return PRESSURE_BY_CDS_NAME[cds_name]
     except KeyError:
-        raise KeyError(f"Short name GRIB non registrata: {short_name!r}") from None
+        raise KeyError(
+            f"Variabile su livelli di pressione non registrata: {cds_name!r}. "
+            f"Disponibili: {sorted(PRESSURE_BY_CDS_NAME)}"
+        ) from None
+
+
+def pressure_spec(cds_name: str, level: int) -> VariableSpec:
+    """Spec di una variabile a un livello di pressione, con nome interno univoco."""
+    # Il nome viene validato per primo: segnalare il livello di una variabile che non
+    # esiste manderebbe a cercare il problema nella parte sbagliata della richiesta.
+    pressure_variable(cds_name)
+    try:
+        return PRESSURE_SPECS[(cds_name, level)]
+    except KeyError:
+        raise KeyError(
+            f"Livello di pressione non pubblicato da ERA5: {level!r}. "
+            f"Ammessi: {list(ERA5_PRESSURE_LEVELS)}"
+        ) from None

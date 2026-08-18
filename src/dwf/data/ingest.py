@@ -11,6 +11,10 @@ Struttura reale dei file, verificata sui GRIB scaricati e non assunta:
   differenza di struttura fra le due famiglie a produrre il `DatasetBuildError` se si
   prova ad aprirle nello stesso dataset, ed e' il motivo per cui il download le
   separa.
+- **livelli di pressione**: come le istantanee, `(time, latitude, longitude)`, con il
+  livello come coordinata scalare `isobaricInhPa`. Un file per livello, perche' la short
+  name GRIB non lo contiene e due livelli della stessa variabile sarebbero
+  indistinguibili.
 - **statici**: `(latitude, longitude)`, senza asse temporale.
 
 Il valore cumulato di ERA5 si riferisce all'ora precedente all'istante valido, quindi
@@ -36,6 +40,7 @@ import polars as pl
 import xarray as xr
 
 from dwf.config import Config
+from dwf.data.download import pressure_kind
 from dwf.slots import GAP_LABEL, accumulation_hours, build_split_layout, split_labels
 from dwf.tables import (
     FOLDS,
@@ -45,7 +50,7 @@ from dwf.tables import (
     cast_to_schema,
     write_table,
 )
-from dwf.variables import spec_by_cds_name
+from dwf.variables import pressure_spec, pressure_variable, spec_by_cds_name
 
 FILL_VALUE = np.float32(np.nan)
 
@@ -144,10 +149,7 @@ def flatten_accumulated(dataset: xr.Dataset) -> xr.Dataset:
 
 def dynamic_short_names(config: Config) -> list[str]:
     """Nomi brevi delle variabili dinamiche, nell'ordine dichiarato in configurazione."""
-    nomi: list[str] = []
-    for cds_name in [*config.variables.instantaneous, *config.variables.accumulated]:
-        nomi.append(spec_by_cds_name(cds_name).short_name)
-    return nomi
+    return [spec.short_name for spec in config.variables.dynamic_specs]
 
 
 def initialize_store(config: Config, *, overwrite: bool = False) -> Path:
@@ -240,6 +242,77 @@ def read_instantaneous(
             nome: np.asarray(selezione[nome].values, dtype=np.float32)
             for nome in selezione.data_vars
         }
+
+
+PRESSURE_LEVEL_COORDS = ("isobaricInhPa", "level")
+
+
+def _pressure_path(config: Config, level: int, year: int, month: int) -> Path:
+    return config.raw_dir / f"{pressure_kind(level)}_{year:04d}-{month:02d}.grib"
+
+
+def check_pressure_level(dataset: xr.Dataset, level: int, nome_file: str) -> None:
+    """Verifica che il file contenga esattamente il livello atteso.
+
+    Il livello non e' ricavabile dai dati: la short name GRIB e' la stessa a ogni
+    livello, quindi un file scambiato produrrebbe un campo etichettato ``t850`` con i
+    valori di un altro livello, senza alcun errore visibile a valle.
+    """
+    coordinata = next(
+        (dataset.coords[nome] for nome in PRESSURE_LEVEL_COORDS if nome in dataset.coords), None
+    )
+    if coordinata is None:
+        raise IngestError(
+            f"{nome_file}: manca la coordinata del livello di pressione "
+            f"(attesa una fra {PRESSURE_LEVEL_COORDS}): il file non viene da "
+            f"reanalysis-era5-pressure-levels"
+        )
+    valori = np.atleast_1d(np.asarray(coordinata.values, dtype=float))
+    if valori.size != 1 or int(valori[0]) != level:
+        raise IngestError(
+            f"{nome_file}: atteso il solo livello {level} hPa, trovati {valori.tolist()}"
+        )
+
+
+def read_pressure(
+    config: Config, year: int, month: int, tempi: list[datetime]
+) -> dict[str, np.ndarray]:
+    """Estrae i campi su livelli di pressione agli slot richiesti.
+
+    Un file per livello, come li produce il download: il livello e' quindi noto dal nome
+    del file e serve solo a costruire il nome interno univoco (``t`` a 850 -> ``t850``),
+    perche' nel GRIB le variabili a livelli diversi hanno la stessa short name.
+    """
+    richiesti = as_naive_utc(tempi)
+    risultato: dict[str, np.ndarray] = {}
+
+    for livello, nomi_cds in config.variables.pressure_by_level().items():
+        percorso = _pressure_path(config, livello, year, month)
+        with open_grib(percorso) as dataset:
+            check_grid(dataset, config)
+            check_pressure_level(dataset, livello, percorso.name)
+            disponibili = pd.to_datetime(dataset.time.values)
+            mancanti = [
+                str(momento) for momento in richiesti if momento not in disponibili.values
+            ]
+            if mancanti:
+                raise IngestError(
+                    f"{percorso.name}: mancano {len(mancanti)} istanti richiesti, "
+                    f"primi: {mancanti[:3]}"
+                )
+            selezione = dataset.sel(time=richiesti)
+            for nome_cds in nomi_cds:
+                short_grib = pressure_variable(nome_cds).short_name
+                if short_grib not in selezione.data_vars:
+                    raise IngestError(
+                        f"{percorso.name}: manca la variabile {short_grib!r} "
+                        f"({nome_cds}). Presenti: {sorted(selezione.data_vars)}"
+                    )
+                interno = pressure_spec(nome_cds, livello).short_name
+                risultato[interno] = np.asarray(
+                    selezione[short_grib].values, dtype=np.float32
+                )
+    return risultato
 
 
 def read_accumulated(
@@ -336,6 +409,8 @@ def ingest_month(config: Config, year: int, month: int) -> MonthResult:
         campi.update(read_instantaneous(config, year, month, tempi))
     if config.variables.accumulated:
         campi.update(read_accumulated(config, year, month, tempi))
+    if config.variables.pressure:
+        campi.update(read_pressure(config, year, month, tempi))
 
     attese = set(dynamic_short_names(config))
     trovate = set(campi)
@@ -486,12 +561,8 @@ def write_variables_table(config: Config) -> Path:
     from dwf.tables import build_variables_table
 
     specs = [
-        spec_by_cds_name(nome)
-        for nome in [
-            *config.variables.instantaneous,
-            *config.variables.accumulated,
-            *config.variables.static,
-        ]
+        *config.variables.dynamic_specs,
+        *[spec_by_cds_name(nome) for nome in config.variables.static],
     ]
     frame = build_variables_table(specs, targets=config.target_names)
     return write_table(frame, VARIABLES, config.tables_dir)
@@ -506,6 +577,10 @@ def available_months(config: Config) -> list[tuple[int, int]]:
             richiesti.append(config.raw_dir / f"instantaneous_{year:04d}-{month:02d}.grib")
         if config.variables.accumulated:
             richiesti.append(config.raw_dir / f"accumulated_{year:04d}-{month:02d}.grib")
+        richiesti.extend(
+            _pressure_path(config, livello, year, month)
+            for livello in config.variables.pressure_by_level()
+        )
         if all(path.exists() and path.stat().st_size > 0 for path in richiesti):
             presenti.append((year, month))
     return presenti
@@ -518,10 +593,12 @@ __all__ = [
     "available_months",
     "build_catalogue",
     "build_folds_table",
+    "check_pressure_level",
     "flatten_accumulated",
     "ingest_month",
     "ingest_static",
     "initialize_store",
+    "read_pressure",
     "slot_positions",
     "write_catalogue",
     "write_folds_table",

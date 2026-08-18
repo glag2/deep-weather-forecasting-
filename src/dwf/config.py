@@ -27,7 +27,7 @@ from dwf.slots import (
     slot_times_between,
     validate_accumulation_fits,
 )
-from dwf.variables import VariableSpec, spec_by_cds_name
+from dwf.variables import VariableSpec, pressure_spec, spec_by_cds_name
 
 # Risoluzione nativa di ERA5 single levels: qualunque `grid` richiesto al CDS
 # deve esserne un multiplo, altrimenti MARS interpola creando punti non allineati.
@@ -169,12 +169,44 @@ class TimeConfig(_Base):
         return n_days * self.slots_per_day
 
 
+class PressureLevelConfig(_Base):
+    """Una variabile ERA5 richiesta a un singolo livello di pressione."""
+
+    variable: str
+    level: Annotated[int, Field(gt=0)]
+
+    @model_validator(mode="after")
+    def _check_registered(self) -> Self:
+        # `pressure_spec` segnala nome e livello sconosciuti con KeyError, che pydantic
+        # non converte in ValidationError.
+        try:
+            pressure_spec(self.variable, self.level)
+        except KeyError as exc:
+            raise ValueError(exc.args[0]) from None
+        return self
+
+    @property
+    def spec(self) -> VariableSpec:
+        """Spec con il nome interno univoco (variabile + livello)."""
+        return pressure_spec(self.variable, self.level)
+
+
 class VariablesConfig(_Base):
     """Variabili richieste al CDS, divise per modalita' di campionamento."""
 
     instantaneous: Annotated[list[str], Field(min_length=1)]
     accumulated: list[str] = []
     static: list[str] = []
+    # Campi su livelli di pressione: collection CDS distinta e parametro `pressure_level`
+    # in piu'. Campionati agli slot come gli istantanei di superficie.
+    pressure: list[PressureLevelConfig] = []
+
+    @model_validator(mode="after")
+    def _check_pressure(self) -> Self:
+        coppie = [(entry.variable, entry.level) for entry in self.pressure]
+        if len(set(coppie)) != len(coppie):
+            raise ValueError("variables.pressure contiene duplicati (variabile, livello)")
+        return self
 
     @model_validator(mode="after")
     def _check_kinds(self) -> Self:
@@ -200,11 +232,34 @@ class VariablesConfig(_Base):
 
     @property
     def dynamic_cds_names(self) -> list[str]:
+        """Nomi CDS dei soli campi di superficie: i livelli di pressione stanno a parte.
+
+        Lo stesso nome CDS puo' comparire a piu' livelli, quindi per quelli non esiste un
+        elenco di nomi univoci: usare `pressure_specs`.
+        """
         return [*self.instantaneous, *self.accumulated]
 
     @property
+    def pressure_specs(self) -> list[VariableSpec]:
+        return [entry.spec for entry in self.pressure]
+
+    def pressure_by_level(self) -> dict[int, tuple[str, ...]]:
+        """Nomi CDS raggruppati per livello, in ordine di livello crescente.
+
+        Il CDS restituisce il prodotto cartesiano di `variable` x `pressure_level`:
+        raggruppare per livello e' quindi il solo modo di chiedere insiemi diversi di
+        variabili a livelli diversi senza scaricare campi non richiesti.
+        """
+        gruppi: dict[int, list[str]] = {}
+        for entry in self.pressure:
+            gruppi.setdefault(entry.level, []).append(entry.variable)
+        return {livello: tuple(gruppi[livello]) for livello in sorted(gruppi)}
+
+    @property
     def dynamic_specs(self) -> list[VariableSpec]:
-        return [spec_by_cds_name(name) for name in self.dynamic_cds_names]
+        # I livelli di pressione stanno in coda: l'ordine dei canali di input segue
+        # questa lista, e anteporli sposterebbe tutti i canali esistenti.
+        return [spec_by_cds_name(name) for name in self.dynamic_cds_names] + self.pressure_specs
 
     @property
     def static_specs(self) -> list[VariableSpec]:

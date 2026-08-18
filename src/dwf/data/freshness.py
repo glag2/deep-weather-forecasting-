@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 
 import polars as pl
 
-from dwf.data.download import DATASET, days_to_request
+from dwf.data.download import DATASET, days_to_request, pressure_kind
 from dwf.tables import DOWNLOADS, cast_to_schema
 
 if TYPE_CHECKING:  # pragma: no cover - solo per i tipi
@@ -189,6 +189,7 @@ def expected_kinds(config: Config) -> tuple[str, ...]:
         generi.append("instantaneous")
     if config.variables.accumulated:
         generi.append("accumulated")
+    generi.extend(pressure_kind(livello) for livello in config.variables.pressure_by_level())
     return tuple(generi)
 
 

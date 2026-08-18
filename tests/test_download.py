@@ -18,11 +18,13 @@ import pytest
 from dwf.config import Config
 from dwf.data.download import (
     DATASET,
+    PRESSURE_DATASET,
     STATIC_REFERENCE,
     DownloadOutcome,
     DownloadTask,
     build_payload,
     build_tasks,
+    dataset_for,
     outcomes_to_records,
     run_task,
     run_tasks,
@@ -41,6 +43,25 @@ def config(tmp_path: Path) -> Config:
     """
     payload = Config.load(CONFIG_PATH, project_root=tmp_path).model_dump()
     payload["download"]["retry_backoff_seconds"] = 0.0
+    return Config.model_validate({**payload, "project_root": tmp_path})
+
+
+# Due livelli della stessa variabile piu' altre due: e' il caso che il raggruppamento
+# per livello deve gestire senza scaricare campi non richiesti.
+PRESSIONE = [
+    {"variable": "geopotential", "level": 500},
+    {"variable": "temperature", "level": 850},
+    {"variable": "temperature", "level": 500},
+    {"variable": "specific_humidity", "level": 700},
+]
+
+
+@pytest.fixture
+def config_pressione(tmp_path: Path) -> Config:
+    """Come `config`, ma con i quattro campi su livelli di pressione attivi."""
+    payload = Config.load(CONFIG_PATH, project_root=tmp_path).model_dump()
+    payload["download"]["retry_backoff_seconds"] = 0.0
+    payload["variables"]["pressure"] = PRESSIONE
     return Config.model_validate({**payload, "project_root": tmp_path})
 
 
@@ -182,6 +203,95 @@ def test_task_fuori_dal_periodo_configurato_e_rifiutato(config: Config) -> None:
     )
     with pytest.raises(ValueError, match="Nessun giorno da richiedere"):
         build_payload(task, config)
+
+
+# --------------------------------------------------------------------------- #
+# Livelli di pressione
+# --------------------------------------------------------------------------- #
+
+
+def test_senza_livelli_di_pressione_nessun_task_in_piu(config: Config) -> None:
+    tasks = build_tasks(config)
+    assert all(task.pressure_level is None for task in tasks)
+    assert all(dataset_for(task) == DATASET for task in tasks)
+
+
+def test_un_task_per_livello_e_per_mese(config_pressione: Config) -> None:
+    """Tre livelli distinti fra i quattro campi richiesti."""
+    tasks = build_tasks(config_pressione)
+    n_mesi = len(config_pressione.time.months())
+    di_pressione = [task for task in tasks if task.pressure_level is not None]
+    assert len(tasks) == 1 + 2 * n_mesi + 3 * n_mesi
+    assert len(di_pressione) == 3 * n_mesi
+    assert {task.kind for task in di_pressione} == {"pressure500", "pressure700", "pressure850"}
+
+
+def test_i_livelli_di_pressione_hanno_file_propri(config_pressione: Config) -> None:
+    tasks = build_tasks(config_pressione)
+    percorsi = [task.target for task in tasks]
+    assert len(set(percorsi)) == len(percorsi)
+    task = next(t for t in tasks if t.kind == "pressure500" and (t.year, t.month) == (2024, 1))
+    assert task.target.name == "pressure500_2024-01.grib"
+
+
+def test_la_richiesta_usa_la_collection_dei_livelli(config_pressione: Config) -> None:
+    task = next(t for t in build_tasks(config_pressione) if t.kind == "pressure500")
+    assert dataset_for(task) == PRESSURE_DATASET
+    payload = build_payload(task, config_pressione)
+    assert payload["pressure_level"] == ["500"]
+    # A un livello si chiedono solo le variabili che lo usano: il CDS restituisce il
+    # prodotto variabili x livelli, quindi chiederne di piu' scaricherebbe campi inutili.
+    assert payload["variable"] == ["geopotential", "temperature"]
+
+
+def test_un_solo_livello_per_richiesta(config_pressione: Config) -> None:
+    """Il livello non entra nella short name GRIB: due nello stesso file sarebbero ambigui."""
+    for task in build_tasks(config_pressione):
+        if task.pressure_level is None:
+            continue
+        assert len(build_payload(task, config_pressione)["pressure_level"]) == 1
+
+
+def test_i_campi_in_quota_sono_campionati_agli_slot(config_pressione: Config) -> None:
+    """Sono istantanei: chiederli a cadenza oraria moltiplicherebbe per otto il volume."""
+    task = next(t for t in build_tasks(config_pressione) if t.kind == "pressure850")
+    assert list(task.hours) == config_pressione.time.slot_hours
+
+
+def test_la_richiesta_in_quota_condivide_area_e_giorni(config_pressione: Config) -> None:
+    """Gli array devono allinearsi slot per slot con quelli gia' nello store."""
+    tasks = build_tasks(config_pressione)
+    quota = next(
+        t for t in tasks if t.kind == "pressure500" and (t.year, t.month) == (2026, 8)
+    )
+    superficie = next(
+        t for t in tasks if t.kind == "instantaneous" and (t.year, t.month) == (2026, 8)
+    )
+    atteso = build_payload(superficie, config_pressione)
+    trovato = build_payload(quota, config_pressione)
+    for chiave in ("area", "day", "time", "year", "month"):
+        assert trovato[chiave] == atteso[chiave]
+    assert "pressure_level" not in atteso
+
+
+def test_il_client_riceve_la_collection_dei_livelli(config_pressione: Config) -> None:
+    task = next(t for t in build_tasks(config_pressione) if t.kind == "pressure700")
+    client = FakeClient()
+    esito = run_task(task, config_pressione, client)
+    assert esito.status == "downloaded"
+    assert client.calls[0][0] == PRESSURE_DATASET
+    assert client.calls[0][1]["pressure_level"] == ["700"]
+
+
+def test_il_file_in_quota_gia_presente_non_viene_riscaricato(
+    config_pressione: Config,
+) -> None:
+    task = next(t for t in build_tasks(config_pressione) if t.kind == "pressure700")
+    task.target.parent.mkdir(parents=True, exist_ok=True)
+    task.target.write_bytes(b"contenuto-precedente")
+    client = FakeClient()
+    assert run_task(task, config_pressione, client).status == "skipped"
+    assert client.calls == []
 
 
 # --------------------------------------------------------------------------- #

@@ -32,6 +32,7 @@ from dwf.data.download import (
     DownloadTask,
     build_payload,
     build_tasks,
+    dataset_for,
     make_client,
     outcomes_to_records,
     run_task,
@@ -92,7 +93,7 @@ def show_plan(config: Config, tasks: list, limite: int | None) -> None:
     print()
     esempio = tasks[0]
     payload = build_payload(esempio, config)
-    print(f"esempio di richiesta ({esempio.label}):")
+    print(f"esempio di richiesta ({esempio.label}, {dataset_for(esempio)}):")
     for chiave, valore in payload.items():
         testo = str(valore)
         if len(testo) > 110:

@@ -38,6 +38,17 @@ variables:
   accumulated:
     - total_precipitation
     - snowfall
+  # Campi su livelli di pressione (collection reanalysis-era5-pressure-levels).
+  # Campionati agli slot_hours come gli istantanei di superficie, un file per livello.
+  # Vuoto per default: abilitarli cambia il numero di canali di input e rende
+  # inutilizzabili i checkpoint addestrati sul layout attuale.
+  # Esempio:
+  #   pressure:
+  #     - {variable: geopotential, level: 500}      # -> z500
+  #     - {variable: temperature, level: 850}       # -> t850
+  #     - {variable: temperature, level: 500}       # -> t500
+  #     - {variable: specific_humidity, level: 700} # -> q700
+  pressure: []
   # Campi invarianti nel tempo: scaricati una sola volta.
   static:
     - land_sea_mask
