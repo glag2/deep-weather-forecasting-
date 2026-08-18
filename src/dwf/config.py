@@ -374,6 +374,34 @@ class SplitConfig(_Base):
     expanding: bool = True
     n_folds: Annotated[int, Field(ge=1)] | None = None
 
+    # Periodo tenuto fuori da addestramento e validazione, per misurare il modello su un
+    # tempo che non ha mai visto. Serve perche' i blocchi sono cronologici sul magazzino:
+    # ingerire anni nuovi li fa diventare addestramento, comprese le statistiche di
+    # normalizzazione, e il numero che ne risulta sembra buono senza esserlo.
+    #
+    # Gli estremi sono inclusivi e si esprimono come date ISO (`2022-01-01`). Vengono
+    # confrontati con `valid_time`, non con gli indici di slot, perche' gli indici cambiano
+    # significato a ogni nuova ingestione.
+    holdout_start: str | None = None
+    holdout_end: str | None = None
+
+    @model_validator(mode="after")
+    def _check_holdout(self) -> Self:
+        if (self.holdout_start is None) != (self.holdout_end is None):
+            raise ValueError(
+                "holdout_start e holdout_end vanno indicati insieme: un periodo con un "
+                "solo estremo non definisce niente"
+            )
+        if self.holdout_start is not None and self.holdout_end is not None:
+            inizio = date.fromisoformat(self.holdout_start)
+            fine = date.fromisoformat(self.holdout_end)
+            if fine < inizio:
+                raise ValueError(
+                    f"holdout_end ({fine}) precede holdout_start ({inizio}): "
+                    "il periodo escluso sarebbe vuoto"
+                )
+        return self
+
     @model_validator(mode="after")
     def _check_fractions(self) -> Self:
         if self.train_fraction + self.val_fraction >= 1.0:

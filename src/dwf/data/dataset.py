@@ -1,4 +1,4 @@
-"""Dataset torch che serve finestre di input e target dallo store Zarr.
+﻿"""Dataset torch che serve finestre di input e target dallo store Zarr.
 
 Il campionamento e' guidato da `folds.parquet`, che e' l'unica fonte autorevole di
 quali finestre siano ammesse in ciascun fold e split: una finestra e' ammessa solo se
@@ -17,7 +17,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -46,6 +46,10 @@ KEY_FEATURES = "features"
 KEY_SLOT = "start_slot"
 # Prefisso delle chiavi che portano il riferimento diurno usato per l'ancoraggio.
 KEY_BASELINE_PREFIX = "baseline_"
+
+# Nome dello split che raccoglie il periodo tenuto fuori dall'addestramento. Non compare
+# in `folds.parquet` perche' non appartiene ad alcun fold: e' lo stesso per tutti.
+HOLDOUT_SPLIT = "holdout"
 
 
 class DatasetError(RuntimeError):
@@ -340,6 +344,23 @@ def split_bounds(config: Config, fold: int, split: str) -> tuple[int, int] | Non
     return int(estremi[0]), int(estremi[1]) + 1
 
 
+def holdout_mask(config: Config) -> np.ndarray | None:
+    """Quali slot cadono nel periodo escluso, o None se non e' stato dichiarato.
+
+    Il confronto avviene su `valid_time` e non sugli indici, perche' gli indici cambiano
+    significato appena si ingeriscono altri mesi: un periodo espresso in slot indicherebbe
+    date diverse dopo ogni ingestione, cioe' proteggerebbe il periodo sbagliato.
+    """
+    if config.split.holdout_start is None or config.split.holdout_end is None:
+        return None
+
+    catalogo = read_table(SLOTS, config.tables_dir).sort("slot_index")
+    istanti = catalogo.get_column("valid_time").dt.date().to_numpy()
+    inizio = date.fromisoformat(config.split.holdout_start)
+    fine = date.fromisoformat(config.split.holdout_end)
+    return (istanti >= inizio) & (istanti <= fine)
+
+
 def sample_starts(config: Config, fold: int, split: str) -> list[int]:
     """Slot iniziali ammessi per un fold e uno split, alla finestra **corrente**.
 
@@ -357,18 +378,41 @@ def sample_starts(config: Config, fold: int, split: str) -> list[int]:
 
     Rienumerare costa una scansione e rende il conteggio corretto per costruzione.
     """
+    utilizzabili = usable_mask(config)
+    finestra = config.windows.input_slots + config.windows.output_slots
+    escluso = holdout_mask(config)
+
+    if split == HOLDOUT_SPLIT:
+        if escluso is None:
+            raise DatasetError(
+                "Chiesto lo split del periodo escluso senza aver dichiarato "
+                "split.holdout_start e split.holdout_end"
+            )
+        # Il periodo escluso non appartiene a un fold: e' lo stesso per tutti, e si
+        # pretende che la finestra vi stia dentro per intero, altrimenti il modello
+        # verrebbe giudicato anche su istanti che ha visto in addestramento.
+        return [
+            inizio
+            for inizio in range(0, utilizzabili.size - finestra + 1)
+            if bool(utilizzabili[inizio : inizio + finestra].all())
+            and bool(escluso[inizio : inizio + finestra].all())
+        ]
+
     confini = split_bounds(config, fold, split)
     if confini is None:
         return []
     inizio_blocco, fine_blocco = confini
 
-    utilizzabili = usable_mask(config)
-    finestra = config.windows.input_slots + config.windows.output_slots
     ultimo_inizio = min(fine_blocco, utilizzabili.size) - finestra
     return [
         inizio
         for inizio in range(inizio_blocco, ultimo_inizio + 1)
         if bool(utilizzabili[inizio : inizio + finestra].all())
+        # Basta *sfiorare* il periodo escluso perche' la finestra sia inammissibile: se
+        # ne toccasse anche un solo slot, quell'istante entrerebbe nell'addestramento e
+        # nelle statistiche di normalizzazione, e la misura sul periodo non sarebbe piu'
+        # una misura su dati mai visti.
+        and (escluso is None or not bool(escluso[inizio : inizio + finestra].any()))
     ]
 
 
@@ -717,6 +761,7 @@ def build_reader(config: Config, layout: InputLayout) -> ZarrWindowReader:
 
 
 __all__ = [
+    "HOLDOUT_SPLIT",
     "KEY_BASELINE_PREFIX",
     "KEY_FEATURES",
     "KEY_SLOT",
@@ -728,7 +773,9 @@ __all__ = [
     "build_reader",
     "build_targets",
     "diurnal_baselines",
+    "holdout_mask",
     "sample_starts",
     "split_baselines",
     "target_specs",
 ]
+

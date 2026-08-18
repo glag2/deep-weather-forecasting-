@@ -422,6 +422,100 @@ def test_nessun_inizio_ammesso_se_la_finestra_supera_i_dati(config: Config) -> N
     assert sample_starts(enorme, 0, "train") == []
 
 
+class TestPeriodoEscluso:
+    """Un anno tenuto fuori serve solo se non entra da nessuna porta secondaria.
+
+    Il rischio non e' teorico: i blocchi sono cronologici sul magazzino, quindi ingerire
+    anni nuovi li trasforma in addestramento, statistiche di normalizzazione comprese. Il
+    modello verrebbe poi misurato su dati che ha visto e il numero risultante sembrerebbe
+    buono. Questi test fissano il confine.
+
+    Con il catalogo di prova gli slot distano 6 ore da 2024-01-01 00:00, quindi il periodo
+    5-6 gennaio occupa gli slot 16..23, e la finestra di prova vale 5 slot.
+    """
+
+    def _config(self, config: Config, inizio: str | None, fine: str | None) -> Config:
+        return config.model_copy(
+            update={
+                "windows": config.windows.model_copy(
+                    update={"input_slots": 3, "output_slots": 2}
+                ),
+                "split": config.split.model_copy(
+                    update={"holdout_start": inizio, "holdout_end": fine}
+                ),
+            }
+        )
+
+    def test_senza_periodo_dichiarato_nulla_cambia(self, config: Config) -> None:
+        from dwf.data.dataset import sample_starts
+
+        config.tables_dir.mkdir(parents=True, exist_ok=True)
+        _scrivi_catalogo(config, [True] * 30)
+
+        assert sample_starts(self._config(config, None, None), 0, "train") == list(range(26))
+
+    def test_le_finestre_che_sfiorano_il_periodo_sono_rifiutate(self, config: Config) -> None:
+        from dwf.data.dataset import sample_starts
+
+        config.tables_dir.mkdir(parents=True, exist_ok=True)
+        _scrivi_catalogo(config, [True] * 30)
+
+        inizi = sample_starts(self._config(config, "2024-01-05", "2024-01-06"), 0, "train")
+
+        # Ammessi solo prima (finestra che finisce entro lo slot 15) e dopo (dallo slot 24).
+        assert inizi == list(range(12)) + list(range(24, 26))
+        # Il caso che conta: la finestra 12..16 tocca il periodo con un solo slot, il 16,
+        # e va comunque esclusa.
+        assert 12 not in inizi
+
+    def test_lo_split_escluso_contiene_solo_finestre_interne(self, config: Config) -> None:
+        from dwf.data.dataset import HOLDOUT_SPLIT, sample_starts
+
+        config.tables_dir.mkdir(parents=True, exist_ok=True)
+        _scrivi_catalogo(config, [True] * 30)
+
+        inizi = sample_starts(
+            self._config(config, "2024-01-05", "2024-01-06"), 0, HOLDOUT_SPLIT
+        )
+
+        # Dentro 16..23 stanno per intero solo le finestre che partono da 16 a 19.
+        assert inizi == [16, 17, 18, 19]
+
+    def test_nessuna_sovrapposizione_fra_addestramento_e_periodo_escluso(
+        self, config: Config
+    ) -> None:
+        """La garanzia vera, espressa una volta sola: gli insiemi sono disgiunti."""
+        from dwf.data.dataset import HOLDOUT_SPLIT, sample_starts
+
+        config.tables_dir.mkdir(parents=True, exist_ok=True)
+        _scrivi_catalogo(config, [True] * 30)
+        configurazione = self._config(config, "2024-01-05", "2024-01-06")
+        finestra = 5
+
+        slot_di_train = {
+            slot
+            for inizio in sample_starts(configurazione, 0, "train")
+            for slot in range(inizio, inizio + finestra)
+        }
+        slot_esclusi = {
+            slot
+            for inizio in sample_starts(configurazione, 0, HOLDOUT_SPLIT)
+            for slot in range(inizio, inizio + finestra)
+        }
+
+        assert not slot_di_train & slot_esclusi
+
+    def test_chiedere_il_periodo_senza_dichiararlo_e_un_errore(self, config: Config) -> None:
+        """Restituire una lista vuota farebbe apparire il difetto come "nessun dato"."""
+        from dwf.data.dataset import HOLDOUT_SPLIT, DatasetError, sample_starts
+
+        config.tables_dir.mkdir(parents=True, exist_ok=True)
+        _scrivi_catalogo(config, [True] * 30)
+
+        with pytest.raises(DatasetError, match="holdout_start"):
+            sample_starts(self._config(config, None, None), 0, HOLDOUT_SPLIT)
+
+
 def _scrivi_blocchi(config: Config, blocchi: dict[str, tuple[int, int]], n: int) -> None:
     """Catalogo tutto utilizzabile e tabella dei fold con blocchi separati.
 

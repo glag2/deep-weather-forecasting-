@@ -21,7 +21,12 @@ import polars as pl
 
 from dwf.calibration import CalibrationError, calibration_error, fit_calibrator
 from dwf.config import Config
-from dwf.data.dataset import WeatherWindowDataset, build_reader, sample_starts
+from dwf.data.dataset import (
+    HOLDOUT_SPLIT,
+    WeatherWindowDataset,
+    build_reader,
+    sample_starts,
+)
 from dwf.evaluate import (
     best_f1_threshold,
     brier_score,
@@ -50,7 +55,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "default.yaml")
     parser.add_argument("--fold", type=int, default=0)
-    parser.add_argument("--split", choices=("train", "val", "test"), default="test")
+    # `holdout` e' il periodo escluso da addestramento e validazione, dichiarato in
+    # `split.holdout_start` e `split.holdout_end`: e' l'unico modo di misurare il modello
+    # su un tempo che non ha mai visto, dato che i blocchi di fold sono cronologici e
+    # ogni mese ingerito in piu' finisce nell'addestramento.
+    parser.add_argument(
+        "--split", choices=("train", "val", "test", HOLDOUT_SPLIT), default="test"
+    )
     parser.add_argument(
         "--max-windows", type=int, default=None,
         help="Limita le finestre valutate, utile per una verifica rapida.",

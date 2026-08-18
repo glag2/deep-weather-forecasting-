@@ -501,3 +501,27 @@ def test_il_ramo_di_esecuzione_resta_sotto_la_cartella_dei_modelli() -> None:
     )
     with pytest.raises(ValueError, match="models_subdir"):
         fuori.fold_dir(0)
+def test_un_periodo_escluso_con_un_solo_estremo_e_rifiutato() -> None:
+    """Un estremo solo non definisce un periodo: accettarlo significherebbe decidere in
+    silenzio l'altro, e la scelta silenziosa cadrebbe su cosa entra in addestramento."""
+    config = Config.load(CONFIG_PATH)
+    for aggiornamento in ({"holdout_start": "2022-01-01"}, {"holdout_end": "2023-12-31"}):
+        with pytest.raises(ValueError, match="insieme"):
+            config.split.model_copy(update=aggiornamento).model_validate(
+                {**config.split.model_dump(), **aggiornamento}
+            )
+
+
+def test_un_periodo_escluso_rovesciato_e_rifiutato() -> None:
+    config = Config.load(CONFIG_PATH)
+    rovesciato = {"holdout_start": "2023-12-31", "holdout_end": "2022-01-01"}
+    with pytest.raises(ValueError, match="precede"):
+        config.split.model_validate({**config.split.model_dump(), **rovesciato})
+
+
+def test_un_periodo_escluso_coerente_e_accettato() -> None:
+    config = Config.load(CONFIG_PATH)
+    coerente = {"holdout_start": "2022-01-01", "holdout_end": "2023-12-31"}
+    split = config.split.model_validate({**config.split.model_dump(), **coerente})
+    assert split.holdout_start == "2022-01-01"
+    assert split.holdout_end == "2023-12-31"
