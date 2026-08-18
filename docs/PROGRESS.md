@@ -443,6 +443,10 @@ attesi, dal 2024-01-01 al 2026-08-11, senza buchi.
 
 ## 13. Che cosa farei dopo
 
+> Superata: il piano aggiornato e' in **[PIANO.md](PIANO.md)**, con lo stato veritiero di
+> ogni voce. Quanto segue e' la lista come era prima delle misure della sezione 14 e
+> resta solo come traccia storica.
+
 1. Riaddestrare `conv` ancorata a scala piena e rivalutarla onestamente contro la
    persistenza diurna. Il banco e' chiuso: la scelta e' fatta e motivata.
 2. Misurare la **curva di capacita'** invece di ingrandire la rete a intuito. Il banco

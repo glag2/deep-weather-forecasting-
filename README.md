@@ -176,6 +176,7 @@ script**: non vanno modificate a mano, perche' la prossima esecuzione sovrascriv
 
 | File | Cosa contiene | Chi lo produce |
 |---|---|---|
+| [`docs/PIANO.md`](docs/PIANO.md) | Piano di lavoro, con lo stato veritiero di ogni voce | a mano |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | Stato dei lavori, decisioni e problemi aperti | a mano |
 | [`docs/RESEARCH.md`](docs/RESEARCH.md) | Stato dell'arte letto e cosa se ne e' preso | a mano |
 | [`docs/INGESTION.md`](docs/INGESTION.md) | Come i GRIB diventano Zarr, e le anomalie trovate | a mano |
